@@ -231,6 +231,9 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 			return ControlsResult{}, err
 		}
 	}
+	if err := p.validateDocuments(ctx, documents); err != nil {
+		return ControlsResult{}, err
+	}
 	return result, nil
 }
 
@@ -351,6 +354,10 @@ func controlState(n snapshotNode, a axNode) ControlState {
 	}
 	if n.Name == "TEXTAREA" {
 		value := n.TextValue
+		s.Value = &value
+	}
+	if n.hasAttr("contenteditable") && n.attr("contenteditable") != "false" {
+		value := a.Value.text()
 		s.Value = &value
 	}
 	return s

@@ -17,10 +17,45 @@ func controlsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form><div onclick="this.dataset.used='yes'" style="cursor:pointer"><span>Custom choice</span></div><ul onclick="this.dataset.used=event.target.textContent"><li style="cursor:pointer">Delegated Amsterdam</li><li style="cursor:pointer">Delegated Utrecht</li></ul><p style="cursor:pointer">Decorative pointer</p><div tabindex="0">Focus-only container</div><div style="height:0;overflow:hidden"><button>Collapsed button</button></div><script>document.addEventListener('click',()=>{});addEventListener('scroll',()=>document.title='SCROLLED');</script>`)
+		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form><div onclick="this.dataset.used='yes'" style="cursor:pointer"><span>Custom choice</span></div><ul onclick="this.dataset.used=event.target.textContent"><li style="cursor:pointer">Delegated Amsterdam</li><li style="cursor:pointer">Delegated Utrecht</li></ul><p style="cursor:pointer">Decorative pointer</p><div tabindex="0">Focus-only container</div><div role="textbox" contenteditable aria-label="Editor">Editable text</div><input type="checkbox" id="mixed" aria-label="Mixed"><button aria-expanded="true">Expander</button><div role="listbox" aria-label="Choices"><div role="option" aria-selected="true">Selected item</div></div><div style="height:0;overflow:hidden"><button>Collapsed button</button></div><script>document.querySelector('#mixed').indeterminate=true;document.addEventListener('click',()=>{});addEventListener('scroll',()=>document.title='SCROLLED');</script>`)
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+func TestChromeControlsCaptureLargeNativeSelectWithoutShadowDuplicates(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<label>Place <select>`)
+		for i := 0; i < 500; i++ {
+			selected := ""
+			if i == 250 {
+				selected = " selected"
+			}
+			fmt.Fprintf(w, `<option value="place-%d"%s>Place 日本語 %d</option>`, i, selected, i)
+		}
+		fmt.Fprint(w, `</select></label>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{Verbose: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Controls) != 1 {
+		t.Fatalf("native shadow duplicates: %s", result)
+	}
+	control := result.Controls[0]
+	if len(control.Options) != 500 || control.Options[499].Label != "Place 日本語 499" || control.State.Value == nil || *control.State.Value != "place-250" || control.Context != "Place" {
+		t.Fatalf("large select capture: %+v", control)
+	}
+	if !strings.Contains(result.String(), "place-499") {
+		t.Fatal("String silently truncated options")
+	}
 }
 
 func TestChromeControlsKeepContextFromLongLocalParagraphs(t *testing.T) {
@@ -196,6 +231,18 @@ func TestChromeControlsCaptureSemanticStateAndContext(t *testing.T) {
 	}
 	if control, ok := names["Units"]; !ok || len(control.Options) != 3 || control.Options[0].Value != "metric" || !control.Options[2].Disabled || len(control.State.SelectedOptions) != 1 || control.State.SelectedOptions[0] != "imperial" {
 		t.Fatalf("native options: %+v", control)
+	}
+	if control := names["Editor"]; control.State.Value == nil || *control.State.Value != "Editable text" {
+		t.Errorf("contenteditable value: %+v", control)
+	}
+	if control := names["Mixed"]; control.State.Checked != "mixed" {
+		t.Errorf("mixed checkbox: %+v", control)
+	}
+	if control := names["Expander"]; control.State.Expanded == nil || !*control.State.Expanded {
+		t.Errorf("expanded state: %+v", control)
+	}
+	if control := names["Selected item"]; control.State.Selected == nil || !*control.State.Selected {
+		t.Errorf("selected state: %+v", control)
 	}
 	if control, ok := names["Readonly"]; !ok || !control.State.Readonly {
 		t.Fatalf("readonly field: %+v", control)

@@ -88,6 +88,9 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 		}
 		return ReadResult{}, failure("unavailable", "browser returned no readable document")
 	}
+	if err := p.validateDocuments(ctx, documents); err != nil {
+		return ReadResult{}, err
+	}
 	return result, nil
 }
 

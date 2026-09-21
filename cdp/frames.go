@@ -218,6 +218,35 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 	return result, warnings, nil
 }
 
+// Recheck after selector/AX capture too, so results never silently combine
+// a snapshot from one document with semantic data from its replacement.
+func (p *Page) validateDocuments(ctx context.Context, documents []documentCapture) error {
+	loaders := map[string]map[string]string{}
+	for _, doc := range documents {
+		current, ok := loaders[doc.session]
+		if !ok {
+			tree, err := p.frameTree(ctx, doc.session)
+			if err != nil {
+				return err
+			}
+			current = map[string]string{}
+			var walk func(frameTree)
+			walk = func(t frameTree) {
+				current[t.Frame.ID] = t.Frame.Loader
+				for _, child := range t.Children {
+					walk(child)
+				}
+			}
+			walk(tree)
+			loaders[doc.session] = current
+		}
+		if current[doc.frame.ID] != doc.loader {
+			return failure("unavailable", "a document changed during collection; observe the page again")
+		}
+	}
+	return nil
+}
+
 func (p *Page) frameSession(ctx context.Context, id string) (string, error) {
 	c := p.client
 	c.mu.Lock()
