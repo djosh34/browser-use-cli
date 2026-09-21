@@ -31,6 +31,11 @@ func TestNavigationObservesLoadBeforeCommandReply(t *testing.T) {
 			case "Page.enable", "Page.setLifecycleEventsEnabled":
 				reply(ctx, conn, r, map[string]any{})
 			case "Page.navigate":
+				for range 300 {
+					for _, method := range []string{"Page.frameNavigated", "Page.frameStartedLoading", "Page.frameStoppedLoading"} {
+						event(ctx, conn, "session", method, map[string]string{"frameId": "child"})
+					}
+				}
 				event(ctx, conn, "session", "Page.lifecycleEvent", map[string]string{"frameId": "one", "loaderId": "old", "name": "load"})
 				event(ctx, conn, "session", "Page.lifecycleEvent", map[string]string{"frameId": "one", "loaderId": "new", "name": "load"})
 				reply(ctx, conn, r, map[string]string{"frameId": "one", "loaderId": "new"})

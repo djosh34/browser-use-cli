@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -250,6 +251,9 @@ func (t targetInfo) info() PageInfo { return PageInfo{t.ID, t.URL, t.Title} }
 
 // Pages lists ordinary page targets, excluding browser-internal tabs.
 func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
+	c.mu.Lock()
+	known := maps.Clone(c.pages)
+	c.mu.Unlock()
 	var result struct {
 		Targets []targetInfo `json:"targetInfos"`
 	}
@@ -261,10 +265,29 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 	}
 	pages := PagesResult{Pages: []PageInfo{}}
 	for _, t := range result.Targets {
+		if t.ID == "" {
+			return PagesResult{}, failure("protocol", "browser returned an empty target identity")
+		}
+		delete(known, t.ID)
 		if t.eligible() {
 			pages.Pages = append(pages.Pages, t.info())
 		}
 	}
+	// Retire only handles that existed before this snapshot request. A
+	// concurrent Open may have created a page after Chrome captured the list.
+	c.mu.Lock()
+	for id, state := range known {
+		if c.pages[id] != state {
+			continue
+		}
+		delete(c.pages, id)
+		delete(c.sessions, state.session)
+		if !state.detached {
+			state.detached = true
+			close(state.gone)
+		}
+	}
+	c.mu.Unlock()
 	sort.Slice(pages.Pages, func(i, j int) bool { return pages.Pages[i].ID < pages.Pages[j].ID })
 	return pages, nil
 }

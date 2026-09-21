@@ -10,13 +10,14 @@ const eventLimit = 256
 const sessionLimit = 256
 
 type pageState struct {
-	gate       chan struct{}
-	session    string // Protected by Client.mu, as are the event/dialog fields.
-	events     chan response
-	dialog     chan struct{}
-	gone       chan struct{}
-	dialogOpen bool
-	detached   bool
+	gate        chan struct{}
+	session     string // Protected by Client.mu, as are the event/dialog fields.
+	events      chan response
+	dialog      chan struct{}
+	gone        chan struct{}
+	dialogOpen  bool
+	detached    bool
+	initialized bool
 }
 
 // Page is bound to one Client and tab. Multiple Page handles for the same tab
@@ -98,44 +99,51 @@ func (p *Page) attach(ctx context.Context) error {
 	}
 	c := p.client
 	c.mu.Lock()
-	attached := p.state.session != ""
-	detached := p.state.detached
-	c.mu.Unlock()
-	if detached {
-		return failure("page", "the selected page session has detached")
+	if p.state.detached {
+		delete(c.sessions, p.state.session)
+		p.state.session = ""
+		p.state.initialized = false
+		p.state.detached = false
+		p.state.gone = make(chan struct{})
+		p.state.dialogOpen = false
+		p.state.dialog = make(chan struct{})
 	}
-	if attached {
+	session := p.state.session
+	initialized := p.state.initialized
+	c.mu.Unlock()
+	if initialized {
 		return nil
 	}
-	var result struct {
-		Session string `json:"sessionId"`
+	if session == "" {
+		var result struct {
+			Session string `json:"sessionId"`
+		}
+		if err := c.call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": p.id, "flatten": true}, &result); err != nil {
+			return err
+		}
+		if result.Session == "" {
+			return failure("protocol", "browser did not return an attached session")
+		}
+		session = result.Session
+		c.mu.Lock()
+		p.state.session = session
+		c.sessions[session] = p.state
+		c.mu.Unlock()
 	}
-	if err := c.call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": p.id, "flatten": true}, &result); err != nil {
-		return err
-	}
-	if result.Session == "" {
-		return failure("protocol", "browser did not return an attached session")
-	}
-	c.mu.Lock()
-	p.state.session = result.Session
-	c.sessions[result.Session] = p.state
-	c.mu.Unlock()
 	for _, method := range []string{"Page.enable", "Page.setLifecycleEventsEnabled"} {
 		var params any
 		if method == "Page.setLifecycleEventsEnabled" {
 			params = map[string]bool{"enabled": true}
 		}
-		if err := c.call(ctx, result.Session, method, params, nil); err != nil {
-			// A partially initialized session must not be reused as though it were ready.
-			c.mu.Lock()
-			if !p.state.detached {
-				p.state.detached = true
-				close(p.state.gone)
-			}
-			c.mu.Unlock()
+		if err := c.call(ctx, session, method, params, nil); err != nil {
+			// A later caller may repeat this idempotent initialization. No page
+			// input has been dispatched and no failed navigation is replayed.
 			return err
 		}
 	}
+	c.mu.Lock()
+	p.state.initialized = true
+	c.mu.Unlock()
 	return nil
 }
 
