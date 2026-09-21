@@ -91,7 +91,7 @@ func TestChromeReadSelectorScopesEveryDocumentAndShadow(t *testing.T) {
 func TestChromeReadCapturesRenderedStructuredText(t *testing.T) {
 	large := strings.Repeat("Long Unicode 日本語 paragraph. ", 10000)
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `<!doctype html><title>Read fixture</title><h1>Heading</h1><main><p>Hello <b>world</b>.</p><ul><li>First</li><li>Second</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>42</td></tr></table><input value="visible input"><input type="password" value="private-password"><div hidden>hidden-text</div><div style="visibility:hidden">invisible-text</div><div style="opacity:0">transparent-text</div><div style="margin-top:2000px">Offscreen text</div><p>`+large+`</p></main>`)
+		fmt.Fprint(w, `<!doctype html><title>Read fixture</title><h1>Heading</h1><main><p>Hello <b>world</b>.</p><ul><li>First</li><li>Second</li><li><div>Wrapped item</div></li></ul><div><a style="display:block">Block one</a><a style="display:block">Block two</a></div><table><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>42</td></tr></table><input value="visible input"><input type="password" value="private-password"><div hidden>hidden-text</div><div style="visibility:hidden">invisible-text</div><div style="opacity:0">transparent-text</div><div style="margin-top:2000px">Offscreen text</div><p>`+large+`</p></main>`)
 	}))
 	defer fixture.Close()
 	c := browserClient(t, chrome(t, "about:blank"))
@@ -108,7 +108,7 @@ func TestChromeReadCapturesRenderedStructuredText(t *testing.T) {
 		t.Fatalf("sections/warnings: %+v", result)
 	}
 	text := result.Sections[0].Text
-	for _, want := range []string{"# Heading", "Hello world.", "* First", "* Second", "Alpha", "42", "visible input", "Offscreen text", strings.TrimSpace(large)} {
+	for _, want := range []string{"# Heading", "Hello world.", "* First", "* Second", "* Wrapped item", "Block one\nBlock two", "Alpha", "42", "visible input", "Offscreen text", strings.TrimSpace(large)} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing rendered content %q", want[:min(60, len(want))])
 		}

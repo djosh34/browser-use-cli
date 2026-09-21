@@ -175,14 +175,14 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 			}
 			n := s.Nodes[index]
 			layout := s.layout(n)
-			blocked = blocked || n.hasAttr("inert") || n.attr("aria-disabled") == "true" || s.style(layout, "display") == "none" || s.style(layout, "opacity") == "0" || s.style(layout, "content-visibility") == "hidden"
+			blocked = blocked || n.hasAttr("inert") || n.attr("aria-disabled") == "true" || s.suppresses(layout)
 			a := ax[n.Backend]
 			role := a.Role.text()
 			native := nativeRole(n)
 			if role == "" || role == "generic" || role == "none" {
 				role = native
 			}
-			available := !blocked && !n.hasAttr("disabled") && !a.property("disabled").boolean() && layout != nil && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
+			available := !blocked && !n.hasAttr("disabled") && !a.property("disabled").boolean() && layout != nil && layout.Bounds.Width > 0 && layout.Bounds.Height > 0 && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
 			semantic := (native != "" || interactiveRole(role))
 			extra := opts.Verbose && !semantic && s.domTarget(index, parent)
 			if available && ((semantic && (!a.Ignored || native != "")) || extra) {
@@ -386,6 +386,12 @@ func (s *domSnapshot) controlContext(index int, parents map[int]int) string {
 		}
 		candidate := s.plainText(parent)
 		if len([]rune(candidate)) > 240 {
+			// Keep a bounded excerpt of a local paragraph/card instead of
+			// falling back to an indistinguishable repeated link label.
+			switch n.Name {
+			case "P", "LI", "TR", "ARTICLE", "LABEL":
+				context = candidate
+			}
 			break
 		}
 		if candidate != "" {

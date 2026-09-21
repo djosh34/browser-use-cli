@@ -112,7 +112,7 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 				}
 				n := snapshot.Nodes[i]
 				layout := snapshot.layout(n)
-				suppressed = suppressed || snapshot.style(layout, "display") == "none" || snapshot.style(layout, "opacity") == "0" || snapshot.style(layout, "content-visibility") == "hidden"
+				suppressed = suppressed || snapshot.suppresses(layout)
 				if n.Name == "IFRAME" || n.Name == "FRAME" {
 					frameID := n.Frame
 					if frameID == "" {

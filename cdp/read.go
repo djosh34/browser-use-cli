@@ -141,7 +141,7 @@ type domSnapshot struct {
 func (p *Page) snapshot(ctx context.Context, session string) (domSnapshot, error) {
 	var s domSnapshot
 	err := p.client.call(ctx, session, "DOMSnapshot.getSnapshot", map[string]any{
-		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "content-visibility"},
+		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "content-visibility", "overflow-x", "overflow-y"},
 		"includeUserAgentShadowTree": false,
 	}, &s)
 	if err != nil {
@@ -169,9 +169,31 @@ func (s *domSnapshot) layout(n snapshotNode) *snapshotLayout {
 	}
 	return &s.Layouts[*n.Layout]
 }
+func (s *domSnapshot) suppresses(layout *snapshotLayout) bool {
+	if s.style(layout, "display") == "none" || s.style(layout, "opacity") == "0" || s.style(layout, "content-visibility") == "hidden" {
+		return true
+	}
+	if layout == nil {
+		return false
+	}
+	clips := func(property string) bool {
+		value := s.style(layout, property)
+		return value != "" && value != "visible"
+	}
+	return (layout.Bounds.Width <= 0 && clips("overflow-x")) || (layout.Bounds.Height <= 0 && clips("overflow-y"))
+}
+
 func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, bool, error) {
 	var b strings.Builder
 	matched := false
+	lineBreak := func() {
+		text := b.String()
+		line := strings.TrimSpace(text[strings.LastIndexByte(text, '\n')+1:])
+		if line == "*" || (line != "" && strings.Trim(line, "#") == "") {
+			return
+		}
+		b.WriteByte('\n')
+	}
 	seen := make(map[int]bool)
 	var walk func(int, bool) error
 	walk = func(index int, within bool) error {
@@ -182,7 +204,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		n := s.Nodes[index]
 		within = within || selected[n.Backend]
 		layout := s.layout(n)
-		if s.style(layout, "display") == "none" || s.style(layout, "opacity") == "0" || s.style(layout, "content-visibility") == "hidden" || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
+		if s.suppresses(layout) || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
 			return nil
 		}
 		visible := layout != nil && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
@@ -197,17 +219,24 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 				b.WriteString("\n* ")
 				block = true
 			case "P", "DIV", "SECTION", "ARTICLE", "MAIN", "HEADER", "FOOTER", "NAV", "UL", "OL", "TABLE", "TR", "BLOCKQUOTE", "PRE":
-				b.WriteByte('\n')
+				lineBreak()
 				block = true
 			case "BR":
 				b.WriteByte('\n')
 			case "TD", "TH":
 				b.WriteString(" | ")
 			}
+			if n.Type == 1 && !block && n.Name != "TD" && n.Name != "TH" {
+				switch s.style(layout, "display") {
+				case "block", "flex", "grid", "table-row", "list-item":
+					lineBreak()
+					block = true
+				}
+			}
 			if n.Type == 3 {
 				b.WriteString(layout.Text)
 			}
-			if n.Name == "INPUT" {
+			if n.Name == "INPUT" && n.attr("type") != "checkbox" && n.attr("type") != "radio" {
 				b.WriteString(n.InputValue)
 			}
 			if n.Name == "TEXTAREA" {
@@ -228,11 +257,11 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 	if err := walk(root, selected == nil); err != nil {
 		return "", false, err
 	}
-	// Preserve inline text and table separators; collapse only empty block lines.
+	// Preserve inline text and table separators; omit empty block/list markers.
 	var lines []string
 	for _, line := range strings.Split(b.String(), "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && line != "*" && line != "|" {
 			lines = append(lines, line)
 		}
 	}
