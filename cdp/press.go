@@ -107,10 +107,11 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	before, err := p.client.Pages(ctx)
+	observation, err := p.beginInput(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
+	defer p.endInput(observation)
 	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
 		return ActionResult{}, err
 	}
@@ -127,7 +128,7 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 			return ActionResult{}, err
 		}
 	}
-	return p.actionResult(ctx, before)
+	return p.completeInput(ctx, observation, observation.documents[0])
 }
 func (p *Page) dispatchKey(ctx context.Context, key keyStroke, kind string, modifiers int) error {
 	text := ""

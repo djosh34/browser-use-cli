@@ -25,12 +25,13 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	target, err := p.resolveTarget(ctx, ref)
-	defer p.releaseTargets(ctx, target.chain)
+	observation, err := p.beginInput(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	before, err := p.client.Pages(ctx)
+	defer p.endInput(observation)
+	target, err := p.resolveTarget(ctx, ref, observation.documents)
+	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -44,7 +45,7 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if err := fillStatus(status); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.settleFrame(ctx, target.doc); err != nil {
+	if err := p.settleFrame(ctx, target.doc, true); err != nil {
 		return ActionResult{}, err
 	}
 	// Focus/selection handlers can replace, disable, cover, or redirect the field.
@@ -60,7 +61,7 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if err := p.client.call(ctx, target.doc.session, "Input.insertText", map[string]string{"text": text}, nil); err != nil {
 		return ActionResult{}, err
 	}
-	return p.actionResult(ctx, before)
+	return p.completeInput(ctx, observation, target.doc)
 }
 func fillStatus(status string) error {
 	switch status {

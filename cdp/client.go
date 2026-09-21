@@ -148,12 +148,15 @@ func (c *Client) read() {
 		}
 		c.mu.Lock()
 		call, ok := c.pending[msg.ID]
-		if ok && call.session == msg.Session {
+		// Chrome emits a session-not-found routing error at browser scope,
+		// even for a request originally addressed to a flattened session.
+		matches := call.session == msg.Session || (call.session != "" && msg.Session == "" && msg.Error != nil && msg.Error.Code == -32001)
+		if ok && matches {
 			delete(c.pending, msg.ID)
 			call.reply <- msg
 		}
 		c.mu.Unlock()
-		if ok && call.session != msg.Session {
+		if ok && !matches {
 			c.fail(failure("protocol", "response session mismatch"))
 			return
 		}
@@ -173,17 +176,25 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 		c.mu.Unlock()
 		return failure("overflow", "64 calls are already in flight")
 	}
+	if session != "" && c.sessions[session] == nil {
+		c.mu.Unlock()
+		return failure("page", "page session is unavailable")
+	}
 	var dialog, gone <-chan struct{}
 	if state := c.sessions[session]; state != nil {
 		if state.detached {
 			c.mu.Unlock()
 			return failure("page", "page session is detached")
 		}
-		if state.dialogOpen {
+		dialogState := state
+		if state.root != nil {
+			dialogState = state.root
+		}
+		if dialogState.dialogOpen {
 			c.mu.Unlock()
 			return failure("dialog", "a native dialog prevents completion")
 		}
-		dialog = state.dialog
+		dialog = dialogState.dialog
 		gone = state.gone
 	}
 	c.next++

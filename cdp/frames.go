@@ -283,7 +283,7 @@ func (p *Page) frameSession(ctx context.Context, id string) (string, error) {
 	if result.Session == "" {
 		return "", failure("protocol", "browser did not return a frame session")
 	}
-	state = &sessionState{session: result.Session, dialog: make(chan struct{}), gone: make(chan struct{})}
+	state = &sessionState{root: &p.state.sessionState, session: result.Session, gone: make(chan struct{})}
 	c.mu.Lock()
 	p.state.frames[id] = state
 	c.sessions[result.Session] = state

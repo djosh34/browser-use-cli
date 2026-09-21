@@ -25,12 +25,13 @@ func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	target, err := p.resolveTarget(ctx, ref)
-	defer p.releaseTargets(ctx, target.chain)
+	observation, err := p.beginInput(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	before, err := p.client.Pages(ctx)
+	defer p.endInput(observation)
+	target, err := p.resolveTarget(ctx, ref, observation.documents)
+	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -40,7 +41,7 @@ func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (
 	if err := p.client.call(ctx, target.doc.session, "DOM.focus", map[string]string{"objectId": target.object}, nil); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.settleFrame(ctx, target.doc); err != nil {
+	if err := p.settleFrame(ctx, target.doc, false); err != nil {
 		return ActionResult{}, err
 	}
 	if _, err := p.inputPoint(ctx, target); err != nil {
@@ -65,7 +66,7 @@ func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (
 	if err := targetStatus(status); err != nil {
 		return ActionResult{}, err
 	}
-	return p.actionResult(ctx, before)
+	return p.completeInput(ctx, observation, target.doc)
 }
 
 const selectOption = `function(value){` + inputHelpers + `

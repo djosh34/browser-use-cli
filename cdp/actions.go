@@ -34,13 +34,9 @@ type point struct {
 	Y float64 `json:"y"`
 }
 
-func (p *Page) resolveTarget(ctx context.Context, ref controlRef) (resolvedTarget, error) {
+func (p *Page) resolveTarget(ctx context.Context, ref controlRef, documents []documentCapture) (resolvedTarget, error) {
 	if ref.Page != p.id {
 		return resolvedTarget{}, failure("invalid_input", "control reference belongs to another page")
-	}
-	documents, _, err := p.documents(ctx)
-	if err != nil {
-		return resolvedTarget{}, err
 	}
 	target := resolvedTarget{backend: ref.Node}
 	for i, frame := range ref.Frames {
@@ -86,6 +82,7 @@ func (p *Page) resolveTarget(ctx context.Context, ref controlRef) (resolvedTarge
 	if !contains(target.doc.root) {
 		return target, failure("stale", "control node is detached or replaced")
 	}
+	var err error
 	target.object, err = p.resolveNode(ctx, target.doc, ref.Node)
 	return target, err
 }
@@ -159,16 +156,17 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	target, err := p.resolveTarget(ctx, ref)
+	observation, err := p.beginInput(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer p.endInput(observation)
+	target, err := p.resolveTarget(ctx, ref, observation.documents)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	point, err := p.inputPoint(ctx, target)
-	if err != nil {
-		return ActionResult{}, err
-	}
-	before, err := p.client.Pages(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -189,7 +187,7 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 			return ActionResult{}, err
 		}
 	}
-	return p.actionResult(ctx, before)
+	return p.completeInput(ctx, observation, target.doc)
 }
 func (p *Page) actionResult(ctx context.Context, before PagesResult) (ActionResult, error) {
 	info, err := p.info(ctx)

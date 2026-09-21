@@ -16,8 +16,10 @@ type pageState struct {
 }
 
 type sessionState struct {
-	session     string // Protected by Client.mu, as are the event/dialog fields.
+	root        *sessionState // Frame sessions share the tab's native dialog state.
+	session     string        // Protected by Client.mu, as are the event/dialog fields.
 	events      chan response
+	inputEvents bool // Extra frame-navigation events are needed only by input.
 	dialog      chan struct{}
 	gone        chan struct{}
 	dialogOpen  bool
@@ -326,21 +328,29 @@ func (c *Client) routeEvent(ev response) error {
 	if state == nil {
 		return nil
 	}
+	dialogState := state
+	if state.root != nil {
+		dialogState = state.root
+	}
 	switch ev.Method {
 	case "Page.javascriptDialogOpening":
-		if !state.dialogOpen {
-			state.dialogOpen = true
-			close(state.dialog)
+		if !dialogState.dialogOpen {
+			dialogState.dialogOpen = true
+			close(dialogState.dialog)
 		}
 	case "Page.javascriptDialogClosed":
-		state.dialogOpen = false
-		state.dialog = make(chan struct{})
+		dialogState.dialogOpen = false
+		dialogState.dialog = make(chan struct{})
 	case "Target.detachedFromTarget", "Inspector.detached":
 		if !state.detached {
 			state.detached = true
 			close(state.gone)
 		}
 	case "Page.lifecycleEvent", "Page.navigatedWithinDocument":
+	case "Page.frameStartedLoading", "Page.frameStoppedLoading", "Page.frameNavigated":
+		if !state.inputEvents {
+			return nil
+		}
 	default:
 		return nil
 	}

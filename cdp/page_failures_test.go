@@ -74,6 +74,21 @@ func TestPreviouslySelectedPageDoesNotRetargetAfterClosure(t *testing.T) {
 	}
 }
 
+func TestMissingSessionErrorDoesNotPoisonConnection(t *testing.T) {
+	p := navigationPeer(t, func(ctx context.Context, conn *websocket.Conn, r request) {
+		// Chrome answers this browser-level routing error without a sessionId.
+		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf(`{"id":%d,"error":{"code":-32001,"message":"Session with given id not found."}}`, r.ID)))
+	})
+	err := p.Navigate(testContext(t), "https://example.org/")
+	var typed *cdp.Error
+	if !errors.As(err, &typed) || typed.Code != "protocol" {
+		t.Fatalf("missing session: %v", err)
+	}
+	if _, err := p.Info(testContext(t)); err != nil {
+		t.Fatalf("session routing error poisoned independent browser requests: %v", err)
+	}
+}
+
 func TestNavigationInterruptedByPeerEvents(t *testing.T) {
 	for _, code := range []string{"page", "overflow"} {
 		t.Run(code, func(t *testing.T) {
