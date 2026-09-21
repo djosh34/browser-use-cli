@@ -23,7 +23,7 @@ func actionFixture(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, `<title>Destination</title><h1>Destination loaded</h1>`)
 			return
 		}
-		fmt.Fprint(w, `<!doctype html><title>Actions</title><button id="hit" onclick="document.title='Clicked';this.dataset.count=Number(this.dataset.count||0)+1">Hit</button><label>Text <input id="text" value="old"></label><label>Notes <textarea>old notes</textarea></label><div contenteditable aria-label="Editor">old editor</div><label>Choice <select id="choice"><option value="a">Alpha</option><option value="b">Beta</option><option value="d" disabled>Disabled</option><option value="x">Duplicate</option><option value="y">Duplicate</option></select></label><input aria-label="Readonly" readonly value="fixed"><a href="/destination">Navigate</a><a href="#same">Same document</a><a href="/popup" target="_blank">Popup</a><button onclick="alert('blocked')">Dialog</button>`)
+		fmt.Fprint(w, `<!doctype html><title>Actions</title><button id="hit" onclick="document.title='Clicked';this.dataset.count=Number(this.dataset.count||0)+1">Hit</button><label>Text <input id="text" value="old"></label><label>Notes <textarea>old notes</textarea></label><div contenteditable aria-label="Editor">old editor</div><label>Choice <select id="choice"><option value="a">Alpha</option><option value="b">Beta</option><option value="d" disabled>Disabled</option><option value="x">Duplicate</option><option value="y">Duplicate</option></select></label><input aria-label="Readonly" readonly value="fixed"><a href="/destination">Navigate</a><a href="#same">Same document</a><a href="/popup" target="_blank">Popup</a><button onclick="alert('blocked')">Dialog</button><div style="width:20px;height:25px;overflow:clip;margin:30px 0 0 100px"><button id="clip" style="width:200px;height:25px;margin-left:-37px" onclick="document.title='Clipped click'">Clipped</button></div><div style="width:70px;margin-top:700px"><a href="#done">Several words wrapping over many lines</a></div>`)
 	}))
 	t.Cleanup(s.Close)
 	return s
@@ -54,6 +54,23 @@ func evalValue(t *testing.T, p *cdp.Page, expression string) string {
 	}
 	return s
 }
+func TestChromeClickClippedAndMultirectControls(t *testing.T) {
+	fixture := actionFixture(t)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Click(testContext(t), targetNamed(t, p, "Clipped"))
+	if err != nil || result.Page.Title != "Clipped click" {
+		t.Fatalf("positive-sized clipped target: %s %v", result, err)
+	}
+	result, err = p.Click(testContext(t), targetNamed(t, p, "Several words wrapping over many lines"))
+	if err != nil || !strings.HasSuffix(result.Page.URL, "#done") {
+		t.Fatalf("offscreen multi-rectangle link: %s %v", result, err)
+	}
+}
+
 func TestChromeInputNavigatesRemoteFrameAcrossProcesses(t *testing.T) {
 	fixture := observationFixture(t)
 	endpoint := chrome(t, "about:blank")
@@ -82,6 +99,19 @@ func TestChromeInputNavigatesRemoteFrameAcrossProcesses(t *testing.T) {
 	read, err = p.Read(testContext(t), cdp.ReadOptions{})
 	if err != nil || !strings.Contains(read.String(), "Nested inner heading") {
 		t.Fatalf("return frame: %s %v", read, err)
+	}
+	if _, err := p.Click(testContext(t), targetNamed(t, p, "Inner navigation")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Click(testContext(t), targetNamed(t, p, "Focus return")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Press(testContext(t), "Enter"); err != nil {
+		t.Fatalf("focused frame navigation: %v", err)
+	}
+	read, err = p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil || !strings.Contains(read.String(), "Nested inner heading") {
+		t.Fatalf("keyboard frame destination: %s %v", read, err)
 	}
 }
 

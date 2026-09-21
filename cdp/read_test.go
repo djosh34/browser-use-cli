@@ -17,7 +17,7 @@ import (
 func observationFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	var s *httptest.Server
-	s = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		cross := strings.Replace(s.URL, "127.0.0.1", "localhost", 1)
 		switch r.URL.Path {
@@ -30,9 +30,10 @@ func observationFixture(t *testing.T) *httptest.Server {
 		case "/inner":
 			fmt.Fprintf(w, `<h2>Nested inner heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Nested inner button</button><input aria-label="Inner text"><button onclick="alert(String.fromCharCode(33))">Inner dialog</button><a href="%s/inner-next">Inner navigation</a><p class="region">Nested inner region</p>`, cross)
 		case "/inner-next":
-			fmt.Fprintf(w, `<h2>Inner destination</h2><p>Changed frame document</p><a href="%s/inner">Return inner</a>`, s.URL)
+			fmt.Fprintf(w, `<h2>Inner destination</h2><p>Changed frame document</p><button onclick="this.nextElementSibling.focus()">Focus return</button><a href="%s/inner">Return inner</a>`, s.URL)
 		}
 	}))
+	s.Start()
 	t.Cleanup(s.Close)
 	return s
 }

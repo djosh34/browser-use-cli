@@ -6,10 +6,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/djosh34/browser-use-cli/cdp"
@@ -55,6 +60,172 @@ func runCLI(t *testing.T, binary, endpoint string, want int, args ...string) str
 		t.Fatal("failure had no diagnostic")
 	}
 	return stderr.String()
+}
+
+func TestCLICancellationSignalsAndBrokenPipe(t *testing.T) {
+	binary := cliBinary(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var startedOnce, releaseOnce sync.Once
+	var navigations atomic.Int64
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<a href="/pending">Pending navigation</a>`)
+		case "/pending":
+			navigations.Add(1)
+			fmt.Fprint(w, `<title>Pending</title><h1>Still alive</h1><img src="/slow">`)
+		case "/slow":
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+	}))
+	t.Cleanup(fixture.Close)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	endpoint := chrome(t, "about:blank")
+	runCLI(t, binary, endpoint, 0, "open", fixture.URL)
+	var controls cdp.ControlsResult
+	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "controls", "--json")), &controls); err != nil || len(controls.Controls) != 1 {
+		t.Fatalf("navigation fixture: %s %v", controls, err)
+	}
+	ctx := testContext(t)
+	cmd := exec.CommandContext(ctx, binary, "click", "--json", string(controls.Controls[0].Target))
+	cmd.Env = append(os.Environ(), "BROWSER_CDP_URL="+endpoint, "GORACE=atexit_sleep_ms=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			cmd.Process.Kill()
+			<-done
+		}
+	})
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("CLI input did not start navigation")
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	err := <-done
+	waited = true
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 130 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"interrupted"`) {
+		t.Fatalf("SIGINT: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if navigations.Load() != 1 {
+		t.Fatal("canceled input was replayed")
+	}
+	releaseOnce.Do(func() { close(release) })
+	c := browserClient(t, endpoint)
+	p, err := c.Page(testContext(t), controls.Page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(testContext(t), `new Promise(resolve=>{if(document.readyState==='complete')resolve(true);else addEventListener('load',()=>resolve(true),{once:true})})`); err != nil {
+		t.Fatal(err)
+	}
+	if output := runCLI(t, binary, endpoint, 0, "read"); !strings.Contains(output, "Still alive") {
+		t.Fatalf("SIGINT closed the browser or page: %s", output)
+	}
+	if output := runCLI(t, binary, endpoint, 1, "eval", "--json", "--timeout", "100ms", `new Promise(()=>{})`); !strings.Contains(output, `"code":"timeout"`) {
+		t.Fatalf("deadline: %s", output)
+	}
+	runCLI(t, binary, endpoint, 0, "pages")
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	defer writer.Close()
+	pipeCmd := exec.CommandContext(testContext(t), binary, "pages", "--json")
+	pipeCmd.Env = append(os.Environ(), "BROWSER_CDP_URL="+endpoint, "GORACE=atexit_sleep_ms=0")
+	pipeCmd.Stdout = writer
+	stderr.Reset()
+	pipeCmd.Stderr = &stderr
+	err = pipeCmd.Run()
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(stderr.String(), `"code":"output"`) {
+		t.Fatalf("broken pipe: %v %s", err, stderr.String())
+	}
+	runCLI(t, binary, endpoint, 0, "pages")
+}
+
+func TestCLIFrameAndShadowReferencesAcrossProcesses(t *testing.T) {
+	binary := cliBinary(t)
+	fixture := observationFixture(t)
+	endpoint := chrome(t, "about:blank")
+	runCLI(t, binary, endpoint, 0, "open", fixture.URL)
+	var controls cdp.ControlsResult
+	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "controls", "--json")), &controls); err != nil {
+		t.Fatal(err)
+	}
+	refs := map[string]string{}
+	for _, control := range controls.Controls {
+		refs[control.Name] = string(control.Target)
+	}
+	for _, name := range []string{"Nested inner button", "Closed shadow button", "Inner text", "Inner navigation"} {
+		if refs[name] == "" {
+			t.Fatalf("missing nested CLI ref %q", name)
+		}
+	}
+	runCLI(t, binary, endpoint, 0, "click", refs["Nested inner button"])
+	runCLI(t, binary, endpoint, 0, "fill", refs["Inner text"], "station")
+	runCLI(t, binary, endpoint, 0, "press", "--page", string(controls.Page.ID), "Control+A")
+	runCLI(t, binary, endpoint, 0, "press", "X")
+	runCLI(t, binary, endpoint, 0, "click", refs["Closed shadow button"])
+	text := runCLI(t, binary, endpoint, 0, "read")
+	if !strings.Contains(text, "Nested inner button!") || !strings.Contains(text, "Closed shadow button!") {
+		t.Fatalf("native nested targets not reached: %s", text)
+	}
+	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "controls", "--json")), &controls); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, control := range controls.Controls {
+		if control.Name == "Inner text" && control.State.Value != nil && *control.State.Value == "X" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("separate-process keyboard focus did not reach the inner field")
+	}
+	if output := runCLI(t, binary, "ftp://invalid", 2, "click", "--json", "--page", "another", refs["Inner navigation"]); !strings.Contains(output, "--page conflicts") {
+		t.Fatalf("conflicting routing was not rejected locally: %s", output)
+	}
+	runCLI(t, binary, endpoint, 0, "click", refs["Inner navigation"])
+	if output := runCLI(t, binary, endpoint, 1, "fill", "--json", refs["Inner text"], "stale"); !strings.Contains(output, `"code":"stale"`) {
+		t.Fatalf("frame document stale ref: %s", output)
+	}
+	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "controls", "--json")), &controls); err != nil {
+		t.Fatal(err)
+	}
+	returned := ""
+	for _, control := range controls.Controls {
+		if control.Name == "Return inner" {
+			returned = string(control.Target)
+		}
+	}
+	if returned == "" {
+		t.Fatal("new frame document was not observed")
+	}
+	runCLI(t, binary, endpoint, 0, "click", returned)
+	if output := runCLI(t, binary, endpoint, 0, "read"); !strings.Contains(output, "Nested inner heading") {
+		t.Fatalf("reverse frame transition: %s", output)
+	}
+	other := chrome(t, "about:blank")
+	if output := runCLI(t, binary, other, 1, "click", "--json", refs["Nested inner button"]); !strings.Contains(output, `"code":"page"`) {
+		t.Fatalf("wrong browser: %s", output)
+	}
 }
 
 func TestCLIChromeCommandsAndCopiedReferences(t *testing.T) {

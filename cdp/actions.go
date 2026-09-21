@@ -316,9 +316,17 @@ const inputHelpers = `
 `
 const clickPoints = `function(){` + inputHelpers + `
  const status=state(this);if(status) return {status,points:[]};
+ const clip={left:0,top:0,right:innerWidth,bottom:innerHeight};
+ for(let n=this.parentElement || this.getRootNode().host;n;n=n.parentElement || n.getRootNode().host){
+  if(!n.getClientRects().length) continue;
+  const style=getComputedStyle(n),r=n.getBoundingClientRect(),sx=n.offsetWidth?r.width/n.offsetWidth:1,sy=n.offsetHeight?r.height/n.offsetHeight:1;
+  const left=r.left+n.clientLeft*sx,top=r.top+n.clientTop*sy;
+  if(style.overflowX!=='visible'){clip.left=Math.max(clip.left,left);clip.right=Math.min(clip.right,left+n.clientWidth*sx)}
+  if(style.overflowY!=='visible'){clip.top=Math.max(clip.top,top);clip.bottom=Math.min(clip.bottom,top+n.clientHeight*sy)}
+ }
  const points=[];
  for(const r of this.getClientRects()){
-  const left=Math.max(0,r.left),top=Math.max(0,r.top),right=Math.min(innerWidth,r.right),bottom=Math.min(innerHeight,r.bottom);
+  const left=Math.max(clip.left,r.left),top=Math.max(clip.top,r.top),right=Math.min(clip.right,r.right),bottom=Math.min(clip.bottom,r.bottom);
   if(right<=left || bottom<=top) continue;
   const dx=Math.min(2,(right-left)/4),dy=Math.min(2,(bottom-top)/4);
   for(const [x,y] of [[(left+right)/2,(top+bottom)/2],[left+dx,top+dy],[right-dx,top+dy],[left+dx,bottom-dy],[right-dx,bottom-dy]]){

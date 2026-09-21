@@ -101,6 +101,9 @@ func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor 
 	}
 	for _, doc := range documents {
 		if doc.frame.ID == actor.frame.ID {
+			if doc.frame.ID == a.documents[0].frame.ID {
+				return nil
+			} // Root task/layout already settled.
 			return p.settleFrame(ctx, doc, false)
 		}
 	}
@@ -206,11 +209,9 @@ func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor doc
 	failedSettles := 0
 	for {
 		settleErr := p.settleFrame(ctx, root, false)
-		tree, err := p.frameTree(ctx, p.state.session)
-		if err != nil {
-			return ActionResult{}, err
-		}
-		if settleErr == nil && actor.frame.ID != root.frame.ID && tree.Frame.Loader == root.loader {
+		// Keyboard input or a root-page handler can navigate any descendant.
+		// Refresh lifecycle coverage even when the original actor was the root.
+		if settleErr == nil {
 			settleErr = p.settleInputFrame(ctx, a, actor)
 		}
 		if err := drain(); err != nil {
