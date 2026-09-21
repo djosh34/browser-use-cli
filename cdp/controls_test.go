@@ -273,7 +273,7 @@ func TestChromeControlsTraverseFramesAndShadows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Warnings) != 0 || len(result.Controls) != 6 {
+	if len(result.Warnings) != 0 || len(result.Controls) != 7 {
 		t.Fatalf("frame/shadow controls: %s", result)
 	}
 	frames := map[string]bool{}

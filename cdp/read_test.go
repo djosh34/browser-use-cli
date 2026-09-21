@@ -28,7 +28,7 @@ func observationFixture(t *testing.T) *httptest.Server {
 		case "/cross":
 			fmt.Fprintf(w, `<h2>Cross origin heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Cross origin button</button><p class="region">Cross origin region</p><iframe src="%s/inner"></iframe>`, s.URL)
 		case "/inner":
-			fmt.Fprint(w, `<h2>Nested inner heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Nested inner button</button><p class="region">Nested inner region</p>`)
+			fmt.Fprint(w, `<h2>Nested inner heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Nested inner button</button><input aria-label="Inner text"><p class="region">Nested inner region</p>`)
 		}
 	}))
 	t.Cleanup(s.Close)

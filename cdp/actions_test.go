@@ -53,6 +53,121 @@ func evalValue(t *testing.T, p *cdp.Page, expression string) string {
 	}
 	return s
 }
+func TestChromeFillAndPressInNestedRemoteFrame(t *testing.T) {
+	fixture := observationFixture(t)
+	endpoint := chrome(t, "about:blank")
+	c := browserClient(t, endpoint)
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := targetNamed(t, p, "Inner text")
+	id, err := ref.PageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	c = browserClient(t, endpoint)
+	p, err = c.Page(testContext(t), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Fill(testContext(t), ref, "remote value"); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	c = browserClient(t, endpoint)
+	p, err = c.Page(testContext(t), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"Control+A", "Backspace", "z"} {
+		if _, err := p.Press(testContext(t), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range result.Controls {
+		if control.Name == "Inner text" && control.State.Value != nil && *control.State.Value == "z" {
+			return
+		}
+	}
+	t.Fatalf("native focus did not survive connection changes: %s", result)
+}
+
+func TestChromeSelectNativeValueAndLabel(t *testing.T) {
+	fixture := actionFixture(t)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := targetNamed(t, p, "Choice")
+	if _, err := p.Eval(testContext(t), `document.body.dataset.events='';for(const type of ['input','change'])document.querySelector('select').addEventListener(type,e=>document.body.dataset.events+=e.type+',');void 0`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ input, value string }{{"b", "b"}, {"Alpha", "a"}} {
+		if _, err := p.Select(testContext(t), ref, tc.input); err != nil {
+			t.Fatalf("select %s: %v", tc.input, err)
+		}
+		if evalValue(t, p, `document.querySelector('select').value`) != tc.value {
+			t.Fatal("wrong native selection")
+		}
+	}
+	if evalValue(t, p, `document.body.dataset.events`) != "input,change,input,change," {
+		t.Fatal("native select events missing")
+	}
+	for _, tc := range []struct{ input, code string }{{"Duplicate", "ambiguous"}, {"Disabled", "blocked"}, {"absent", "invalid_input"}} {
+		_, err := p.Select(testContext(t), ref, tc.input)
+		var e *cdp.Error
+		if !errors.As(err, &e) || e.Code != tc.code {
+			t.Fatalf("select %s: %v", tc.input, err)
+		}
+	}
+	if evalValue(t, p, `document.querySelector('select').value`) != "a" {
+		t.Fatal("rejected selection changed value")
+	}
+	if evalValue(t, p, `document.body.dataset.events`) != "input,change,input,change," {
+		t.Fatal("rejected selection emitted events")
+	}
+}
+
+func TestChromePressNativeEditingAndNavigationKeys(t *testing.T) {
+	fixture := actionFixture(t)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Fill(testContext(t), targetNamed(t, p, "Text"), "query"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"Control+A", "Backspace", "Shift+x", "Tab", "Enter", "Shift+Tab", "ArrowDown", "Escape"} {
+		if _, err := p.Press(testContext(t), key); err != nil {
+			t.Fatalf("press %s: %v", key, err)
+		}
+	}
+	if evalValue(t, p, `document.querySelector('#text').value`) != "X" {
+		t.Fatal("native editing keys did not replace selection")
+	}
+	if evalValue(t, p, `document.activeElement.id`) != "text" {
+		t.Fatal("Tab/Shift+Tab did not move focus")
+	}
+	if evalValue(t, p, `document.querySelector('textarea').value`) != "\nold notes" {
+		t.Fatal("Enter did not edit the focused textarea")
+	}
+	for _, key := range []string{"", "DefinitelyNotAKey", "Control+Control+A", "Unknown+A"} {
+		_, err := p.Press(testContext(t), key)
+		var e *cdp.Error
+		if !errors.As(err, &e) || e.Code != "invalid_input" {
+			t.Fatalf("invalid key %q: %v", key, err)
+		}
+	}
+}
+
 func TestChromeFillUsesNativeReplacement(t *testing.T) {
 	fixture := actionFixture(t)
 	c := browserClient(t, chrome(t, "about:blank"))
