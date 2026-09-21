@@ -107,6 +107,7 @@ type snapshotNode struct {
 	URL            string `json:"documentURL"`
 	InputValue     string `json:"inputValue"`
 	InputChecked   bool   `json:"inputChecked"`
+	Clickable      bool   `json:"isClickable"`
 	OptionSelected bool   `json:"optionSelected"`
 	TextValue      string `json:"textValue"`
 }
@@ -121,15 +122,10 @@ func (n snapshotNode) attr(name string) string {
 }
 
 type snapshotLayout struct {
-	Node   int    `json:"domNodeIndex"`
-	Text   string `json:"layoutText"`
-	Style  *int   `json:"styleIndex"`
-	Bounds struct {
-		X      float64 `json:"x"`
-		Y      float64 `json:"y"`
-		Width  float64 `json:"width"`
-		Height float64 `json:"height"`
-	} `json:"boundingBox"`
+	Node   int          `json:"domNodeIndex"`
+	Text   string       `json:"layoutText"`
+	Style  *int         `json:"styleIndex"`
+	Bounds viewportRect `json:"boundingBox"`
 }
 type domSnapshot struct {
 	Nodes   []snapshotNode   `json:"domNodes"`

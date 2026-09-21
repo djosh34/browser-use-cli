@@ -137,6 +137,8 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 		return ControlsResult{}, err
 	}
 	result := ControlsResult{Page: info, Controls: []Control{}, Warnings: warnings}
+	viewports := map[string]viewportRect{}
+	frameOffscreen := map[string]bool{}
 	for _, doc := range documents {
 		var tree struct {
 			Nodes []axNode `json:"nodes"`
@@ -153,6 +155,11 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 		viewport, err := p.viewport(ctx, doc)
 		if err != nil {
 			return ControlsResult{}, err
+		}
+		viewports[doc.frame.ID] = viewport
+		frameOffscreen[doc.frame.ID] = frameOffscreen[doc.parent]
+		if doc.ownerBounds != nil {
+			frameOffscreen[doc.frame.ID] = frameOffscreen[doc.frame.ID] || outsideViewport(*doc.ownerBounds, viewports[doc.parent])
 		}
 		s := doc.snapshot
 		parent := map[int]int{}
@@ -177,15 +184,21 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 			}
 			available := !blocked && !n.hasAttr("disabled") && !a.property("disabled").boolean() && layout != nil && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
 			semantic := (native != "" || interactiveRole(role))
-			if available && semantic && (!a.Ignored || native != "") {
+			extra := opts.Verbose && !semantic && s.domTarget(index, parent)
+			if available && ((semantic && (!a.Ignored || native != "")) || extra) {
 				ref, err := makeReference(p.id, doc, documents, n.Backend)
 				if err != nil {
 					return err
 				}
 				bounds := layout.Bounds
 				c := Control{Target: ref, Role: role, Name: strings.TrimSpace(a.Name.text()), Frame: doc.frame, Source: "semantic",
-					Offscreen: bounds.X+bounds.Width <= viewport.X || bounds.Y+bounds.Height <= viewport.Y || bounds.X >= viewport.X+viewport.Width || bounds.Y >= viewport.Y+viewport.Height,
+					Offscreen: frameOffscreen[doc.frame.ID] || outsideViewport(bounds, viewport),
 					Context:   s.controlContext(index, parent), State: controlState(n, a),
+				}
+				if extra {
+					c.Role = "clickable"
+					c.Source = "dom"
+					c.Context = s.plainText(index)
 				}
 				if n.Name == "A" || n.Name == "AREA" {
 					if base, err := url.Parse(doc.frame.URL); err == nil {
@@ -204,6 +217,9 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 				}
 				result.Controls = append(result.Controls, c)
 			}
+			if n.Name == "SELECT" {
+				return nil
+			}
 			for _, child := range n.Children {
 				if err := walk(child, blocked); err != nil {
 					return err
@@ -217,6 +233,51 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 	}
 	return result, nil
 }
+
+// Extra targets need direct click evidence, or a pointer-styled list item
+// under a local delegated list listener. A pointer cursor, focusability, or a
+// document-wide listener alone is not enough.
+func (s *domSnapshot) domTarget(index int, parents map[int]int) bool {
+	n := s.Nodes[index]
+	if n.Type != 1 {
+		return false
+	}
+	switch n.Name {
+	case "HTML", "BODY", "FORM", "MAIN", "SECTION", "ARTICLE", "NAV", "UL", "OL", "TABLE", "LABEL", "SELECT", "OPTION":
+		return false
+	}
+	text := s.plainText(index)
+	if text == "" || len([]rune(text)) > 160 {
+		return false
+	}
+	var nested func(int) bool
+	nested = func(i int) bool {
+		for _, child := range s.Nodes[i].Children {
+			if child < 0 || child >= len(s.Nodes) {
+				return true
+			}
+			c := s.Nodes[child]
+			if c.Clickable || nativeRole(c) != "" || interactiveRole(c.attr("role")) || nested(child) {
+				return true
+			}
+		}
+		return false
+	}
+	if nested(index) {
+		return false
+	}
+	if n.Clickable {
+		return true
+	}
+	if n.Name == "LI" && s.style(s.layout(n), "cursor") == "pointer" {
+		if i, ok := parents[index]; ok {
+			parent := s.Nodes[i]
+			return (parent.Name == "UL" || parent.Name == "OL") && parent.Clickable
+		}
+	}
+	return false
+}
+
 func (n snapshotNode) hasAttr(name string) bool {
 	for _, a := range n.Attributes {
 		if a.Name == name {

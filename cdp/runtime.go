@@ -12,6 +12,10 @@ type viewportRect struct {
 	Height float64 `json:"height"`
 }
 
+func outsideViewport(bounds, viewport viewportRect) bool {
+	return bounds.X+bounds.Width <= viewport.X || bounds.Y+bounds.Height <= viewport.Y || bounds.X >= viewport.X+viewport.Width || bounds.Y >= viewport.Y+viewport.Height
+}
+
 func (p *Page) viewport(ctx context.Context, doc documentCapture) (viewportRect, error) {
 	var world struct {
 		ID int64 `json:"executionContextId"`

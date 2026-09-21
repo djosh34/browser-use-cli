@@ -15,12 +15,13 @@ type frameTree struct {
 	Children []frameTree `json:"childFrames"`
 }
 type documentCapture struct {
-	frame    FrameInfo
-	parent   string
-	loader   string
-	session  string
-	snapshot *domSnapshot
-	root     int
+	frame       FrameInfo
+	parent      string
+	loader      string
+	session     string
+	snapshot    *domSnapshot
+	root        int
+	ownerBounds *viewportRect
 }
 
 func (p *Page) frameTree(ctx context.Context, session string) (frameTree, error) {
@@ -58,9 +59,14 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 	}
 	addTree(root, "")
 	captures := map[string]documentCapture{}
+	hidden := map[string]bool{}
+	ownerBounds := map[string]*viewportRect{}
 	warnings := []string{}
 	for index := 0; index < len(order); index++ {
 		id := order[index]
+		if hidden[id] {
+			continue
+		}
 		if _, ok := captures[id]; ok {
 			continue
 		}
@@ -96,42 +102,55 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 		// their owner elements to find the embedded frame identity, rather
 		// than guessing from URLs or attaching unrelated browser targets.
 		for rootIndex, node := range snapshot.Nodes {
-			if node.Type != 9 {
+			if node.Type != 9 || hidden[node.Frame] {
 				continue
 			}
-			var owners func(int) error
-			owners = func(i int) error {
+			var owners func(int, bool) error
+			owners = func(i int, suppressed bool) error {
 				if i < 0 || i >= len(snapshot.Nodes) {
 					return failure("protocol", "invalid frame owner tree")
 				}
 				n := snapshot.Nodes[i]
-				if (n.Name == "IFRAME" || n.Name == "FRAME") && n.Document == nil {
-					var described struct {
-						Node struct {
-							Frame string `json:"frameId"`
-						} `json:"node"`
+				layout := snapshot.layout(n)
+				suppressed = suppressed || snapshot.style(layout, "display") == "none" || snapshot.style(layout, "opacity") == "0" || snapshot.style(layout, "content-visibility") == "hidden"
+				if n.Name == "IFRAME" || n.Name == "FRAME" {
+					frameID := n.Frame
+					if frameID == "" {
+						var described struct {
+							Node struct {
+								Frame string `json:"frameId"`
+							} `json:"node"`
+						}
+						if err := p.client.call(ctx, session, "DOM.describeNode", map[string]any{"backendNodeId": n.Backend}, &described); err != nil {
+							return err
+						}
+						frameID = described.Node.Frame
 					}
-					if err := p.client.call(ctx, session, "DOM.describeNode", map[string]any{"backendNodeId": n.Backend}, &described); err != nil {
-						return err
-					}
-					if described.Node.Frame == "" {
-						warnings = append(warnings, fmt.Sprintf("an embedded frame in %s is unavailable", node.Frame))
+					if frameID == "" {
+						if !suppressed && layout != nil {
+							warnings = append(warnings, fmt.Sprintf("an embedded frame in %s is unavailable", node.Frame))
+						}
 						return nil
 					}
-					if _, ok := known[described.Node.Frame]; !ok {
+					if _, ok := known[frameID]; !ok {
 						var remote frameTree
-						remote.Frame.ID = described.Node.Frame
+						remote.Frame.ID = frameID
 						addTree(remote, node.Frame)
+					}
+					hidden[frameID] = suppressed || layout == nil || layout.Bounds.Width <= 0 || layout.Bounds.Height <= 0 || snapshot.style(layout, "visibility") == "hidden" || snapshot.style(layout, "visibility") == "collapse"
+					if layout != nil {
+						bounds := layout.Bounds
+						ownerBounds[frameID] = &bounds
 					}
 				}
 				for _, child := range n.Children {
-					if err := owners(child); err != nil {
+					if err := owners(child, suppressed); err != nil {
 						return err
 					}
 				}
 				return nil
 			}
-			if err := owners(rootIndex); err != nil {
+			if err := owners(rootIndex, false); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -160,7 +179,7 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 				warnings = append(warnings, fmt.Sprintf("frame %s changed during collection", node.Frame))
 				continue
 			}
-			captures[node.Frame] = documentCapture{FrameInfo{node.Frame, node.URL}, frame.Frame.Parent, frame.Frame.Loader, session, &snapshot, i}
+			captures[node.Frame] = documentCapture{FrameInfo{node.Frame, node.URL}, frame.Frame.Parent, frame.Frame.Loader, session, &snapshot, i, ownerBounds[node.Frame]}
 		}
 	}
 	result := make([]documentCapture, 0, len(captures))
@@ -169,7 +188,7 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 	visited := map[string]bool{}
 	var appendDocument func(string)
 	appendDocument = func(id string) {
-		if visited[id] {
+		if visited[id] || hidden[id] {
 			return
 		}
 		visited[id] = true

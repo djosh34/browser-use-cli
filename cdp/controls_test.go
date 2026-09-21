@@ -17,10 +17,120 @@ func controlsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form>`)
+		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form><div onclick="this.dataset.used='yes'" style="cursor:pointer"><span>Custom choice</span></div><ul onclick="this.dataset.used=event.target.textContent"><li style="cursor:pointer">Delegated Amsterdam</li><li style="cursor:pointer">Delegated Utrecht</li></ul><p style="cursor:pointer">Decorative pointer</p><div tabindex="0">Focus-only container</div><script>document.addEventListener('click',()=>{});addEventListener('scroll',()=>document.title='SCROLLED');</script>`)
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+func TestChromeVerboseControlsUseLocalInteractionEvidence(t *testing.T) {
+	fixture := controlsFixture(t)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbose, err := p.Controls(testContext(t), cdp.ControlsOptions{Verbose: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Custom choice", "Delegated Amsterdam", "Delegated Utrecht"} {
+		if strings.Contains(normal.String(), text) {
+			t.Errorf("extra target in normal controls: %s", normal)
+		}
+		found := false
+		for _, control := range verbose.Controls {
+			if control.Source == "dom" && strings.Contains(control.Context, text) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing custom target %q: %s", text, verbose)
+		}
+	}
+	for _, text := range []string{"Decorative pointer", "Focus-only container"} {
+		if strings.Contains(verbose.String(), text) {
+			t.Errorf("false target %q: %s", text, verbose)
+		}
+	}
+	if len(verbose.Controls) != len(normal.Controls)+3 {
+		t.Errorf("extra duplicate/container targets: %s", verbose)
+	}
+	info, err := p.Info(testContext(t))
+	if err != nil || info.Title != "Controls fixture" {
+		t.Fatalf("observation scrolled: %+v %v", info, err)
+	}
+}
+
+func TestChromeObservationRespectsFrameVisibility(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/" {
+			fmt.Fprint(w, `<iframe hidden src="/hidden"></iframe><iframe style="margin-top:2000px" src="/offscreen"></iframe>`)
+		} else if r.URL.Path == "/hidden" {
+			fmt.Fprint(w, `<p>Hidden frame text</p><button>Hidden frame button</button>`)
+		} else {
+			fmt.Fprint(w, `<p>Offscreen frame text</p><button>Offscreen frame button</button>`)
+		}
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read.String(), "Hidden frame text") || !strings.Contains(read.String(), "Offscreen frame text") || len(read.Warnings) != 0 {
+		t.Fatalf("frame text visibility: %s", read)
+	}
+	controls, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(controls.Controls) != 1 || controls.Controls[0].Name != "Offscreen frame button" || !controls.Controls[0].Offscreen || len(controls.Warnings) != 0 {
+		t.Fatalf("frame control visibility: %s", controls)
+	}
+}
+
+func TestChromeControlsTraverseFramesAndShadows(t *testing.T) {
+	fixture := observationFixture(t)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 0 || len(result.Controls) != 6 {
+		t.Fatalf("frame/shadow controls: %s", result)
+	}
+	frames := map[string]bool{}
+	names := map[string]bool{}
+	for _, control := range result.Controls {
+		frames[control.Frame.ID] = true
+		names[control.Name] = true
+		id, err := control.Target.PageID()
+		if err != nil || id != result.Page.ID {
+			t.Fatalf("nested reference routing: %s %v", id, err)
+		}
+	}
+	if len(frames) != 4 {
+		t.Fatalf("source frames: %v", frames)
+	}
+	for _, name := range []string{"Root button", "Same origin button", "Cross origin button", "Nested inner button", "Open shadow button", "Closed shadow button"} {
+		if !names[name] {
+			t.Errorf("missing %q", name)
+		}
+	}
 }
 
 func TestChromeControlsCaptureSemanticStateAndContext(t *testing.T) {
