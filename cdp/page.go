@@ -10,7 +10,12 @@ const eventLimit = 256
 const sessionLimit = 256
 
 type pageState struct {
-	gate        chan struct{}
+	gate chan struct{}
+	sessionState
+	frames map[string]*sessionState
+}
+
+type sessionState struct {
 	session     string // Protected by Client.mu, as are the event/dialog fields.
 	events      chan response
 	dialog      chan struct{}
@@ -56,7 +61,7 @@ func (c *Client) pageHandle(id PageID) (*Page, error) {
 		if len(c.pages) >= sessionLimit {
 			return nil, failure("overflow", "too many attached pages in this client")
 		}
-		state = &pageState{gate: make(chan struct{}, 1), dialog: make(chan struct{}), gone: make(chan struct{})}
+		state = &pageState{gate: make(chan struct{}, 1), sessionState: sessionState{dialog: make(chan struct{}), gone: make(chan struct{})}, frames: make(map[string]*sessionState)}
 		c.pages[id] = state
 	}
 	return &Page{c, id, state}, nil
@@ -127,7 +132,7 @@ func (p *Page) attach(ctx context.Context) error {
 		session = result.Session
 		c.mu.Lock()
 		p.state.session = session
-		c.sessions[session] = p.state
+		c.sessions[session] = &p.state.sessionState
 		c.mu.Unlock()
 	}
 	for _, method := range []string{"Page.enable", "Page.setLifecycleEventsEnabled"} {

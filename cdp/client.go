@@ -47,7 +47,7 @@ type Client struct {
 	pending  map[int64]pendingCall
 	err      error
 	pages    map[PageID]*pageState
-	sessions map[string]*pageState
+	sessions map[string]*sessionState
 	openGate chan struct{}
 }
 
@@ -72,7 +72,7 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 	}
 	conn.SetReadLimit(messageLimit + 1)
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[PageID]*pageState), sessions: make(map[string]*pageState), openGate: make(chan struct{}, 1)}
+	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[PageID]*pageState), sessions: make(map[string]*sessionState), openGate: make(chan struct{}, 1)}
 	go c.read()
 	// This browser-only command also rejects page-level connections behind proxies.
 	var contexts struct {
@@ -282,6 +282,14 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 		}
 		delete(c.pages, id)
 		delete(c.sessions, state.session)
+		for _, frame := range state.frames {
+			delete(c.sessions, frame.session)
+			if !frame.detached {
+				frame.detached = true
+				close(frame.gone)
+			}
+		}
+		clear(state.frames)
 		if !state.detached {
 			state.detached = true
 			close(state.gone)
