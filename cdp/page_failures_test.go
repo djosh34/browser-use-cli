@@ -3,6 +3,7 @@ package cdp_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -40,6 +41,37 @@ func navigationPeer(t *testing.T, navigate func(context.Context, *websocket.Conn
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestPreviouslySelectedPageDoesNotRetargetAfterClosure(t *testing.T) {
+	c := connectPeer(t, func(ctx context.Context, conn *websocket.Conn) {
+		first := true
+		for {
+			r, err := receive(ctx, conn)
+			if err != nil {
+				return
+			}
+			if r.Method == "Target.getTargets" {
+				if first {
+					reply(ctx, conn, r, pagesReply("Original"))
+					first = false
+				} else {
+					reply(ctx, conn, r, map[string]any{"targetInfos": []any{}})
+				}
+			} else {
+				conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf(`{"id":%d,"error":{"code":-32602,"message":"No target"}}`, r.ID)))
+			}
+		}
+	})
+	p, err := c.Page(testContext(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Info(testContext(t))
+	var e *cdp.Error
+	if !errors.As(err, &e) || e.Code != "page" {
+		t.Fatalf("closed selected page: %v", err)
+	}
 }
 
 func TestNavigationInterruptedByPeerEvents(t *testing.T) {

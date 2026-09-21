@@ -82,16 +82,16 @@ func (p *Page) Info(ctx context.Context) (PageInfo, error) {
 	return p.info(ctx)
 }
 func (p *Page) info(ctx context.Context) (PageInfo, error) {
-	var result struct {
-		Target targetInfo `json:"targetInfo"`
-	}
-	if err := p.client.call(ctx, "", "Target.getTargetInfo", map[string]any{"targetId": p.id}, &result); err != nil {
+	result, err := p.client.Pages(ctx)
+	if err != nil {
 		return PageInfo{}, err
 	}
-	if result.Target.ID != p.id || !result.Target.eligible() {
-		return PageInfo{}, failure("page", "the selected page is unavailable or ineligible")
+	for _, info := range result.Pages {
+		if info.ID == p.id {
+			return info, nil
+		}
 	}
-	return result.Target.info(), nil
+	return PageInfo{}, failure("page", "the selected page is unavailable or ineligible")
 }
 func (p *Page) attach(ctx context.Context) error {
 	if _, err := p.info(ctx); err != nil {
