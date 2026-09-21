@@ -10,7 +10,6 @@ type domNode struct {
 	ID         int64     `json:"nodeId"`
 	Backend    int64     `json:"backendNodeId"`
 	Type       int       `json:"nodeType"`
-	Frame      string    `json:"frameId"`
 	ShadowType string    `json:"shadowRootType"`
 	Children   []domNode `json:"children"`
 	Shadows    []domNode `json:"shadowRoots"`

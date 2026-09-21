@@ -129,7 +129,6 @@ func (n snapshotNode) attr(name string) string {
 }
 
 type snapshotLayout struct {
-	Node   int          `json:"domNodeIndex"`
 	Text   string       `json:"layoutText"`
 	Style  *int         `json:"styleIndex"`
 	Bounds viewportRect `json:"boundingBox"`

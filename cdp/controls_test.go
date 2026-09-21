@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djosh34/browser-use-cli/cdp"
 )
@@ -21,6 +22,60 @@ func controlsFixture(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+func TestChromeControlsRefreshAfterFrameDocumentNavigation(t *testing.T) {
+	advance := make(chan struct{})
+	ready := make(chan struct{}, 1)
+	var fixture *httptest.Server
+	fixture = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprintf(w, `<iframe src="%s/child"></iframe>`, strings.Replace(fixture.URL, "127.0.0.1", "localhost", 1))
+		case "/child":
+			fmt.Fprint(w, `<button>Original</button><script>fetch('/advance').then(()=>location.href='/changed')</script>`)
+		case "/advance":
+			select {
+			case <-advance:
+			case <-r.Context().Done():
+			}
+		case "/changed":
+			fmt.Fprint(w, `<button>Replacement</button><script>addEventListener('load',()=>fetch('/ready'))</script>`)
+		case "/ready":
+			ready <- struct{}{}
+		}
+	}))
+	defer fixture.Close()
+	defer func() {
+		select {
+		case <-advance:
+		default:
+			close(advance)
+		}
+	}()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil || len(before.Controls) != 1 {
+		t.Fatalf("before frame navigation: %s %v", before, err)
+	}
+	close(advance)
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("frame navigation did not load")
+	}
+	after, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil || len(after.Controls) != 1 || len(after.Warnings) != 0 {
+		t.Fatalf("after frame navigation: %s %v", after, err)
+	}
+	if before.Page.ID != after.Page.ID || after.Controls[0].Name != "Replacement" || after.Controls[0].Target == before.Controls[0].Target || !strings.HasSuffix(after.Controls[0].Frame.URL, "/changed") {
+		t.Fatalf("document identity not refreshed: %s", after)
+	}
 }
 
 func TestChromeControlsResolveHTMLBase(t *testing.T) {

@@ -282,6 +282,14 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 		}
 		delete(c.pages, id)
 		delete(c.sessions, state.session)
+		for _, frame := range state.frames {
+			delete(c.sessions, frame.session)
+			if !frame.detached {
+				frame.detached = true
+				close(frame.gone)
+			}
+		}
+		clear(state.frames)
 		if !state.detached {
 			state.detached = true
 			close(state.gone)

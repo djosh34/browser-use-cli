@@ -10,7 +10,6 @@ type frameTree struct {
 		ID     string `json:"id"`
 		Parent string `json:"parentId"`
 		Loader string `json:"loaderId"`
-		URL    string `json:"url"`
 	} `json:"frame"`
 	Children []frameTree `json:"childFrames"`
 }
