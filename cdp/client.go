@@ -1,9 +1,11 @@
 package cdp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -67,7 +69,7 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 		}
 		return nil, failure("connection", "browser WebSocket connection failed")
 	}
-	conn.SetReadLimit(messageLimit)
+	conn.SetReadLimit(messageLimit + 1)
 	lifetime, cancel := context.WithCancel(context.Background())
 	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[PageID]*pageState), sessions: make(map[string]*pageState), openGate: make(chan struct{}, 1)}
 	go c.read()
@@ -78,6 +80,10 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 	if err := c.call(ctx, "", "Target.getBrowserContexts", nil, &contexts); err != nil {
 		c.Close()
 		return nil, err
+	}
+	if contexts.IDs == nil {
+		c.Close()
+		return nil, failure("protocol", "browser endpoint did not return browser contexts")
 	}
 	return c, nil
 }
@@ -109,13 +115,26 @@ func (c *Client) connectionError() error {
 func (c *Client) read() {
 	defer close(c.done)
 	for {
-		_, data, err := c.conn.Read(c.ctx)
+		kind, reader, err := c.conn.Reader(c.ctx)
+		if err != nil {
+			c.fail(failure("connection", "browser connection lost"))
+			return
+		}
+		if kind != websocket.MessageText {
+			c.fail(failure("protocol", "browser sent a non-text message"))
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(reader, messageLimit+1))
+		if len(data) > messageLimit {
+			c.fail(failure("overflow", "browser message exceeds 64 MiB"))
+			return
+		}
 		if err != nil {
 			c.fail(failure("connection", "browser connection lost"))
 			return
 		}
 		var msg response
-		if json.Unmarshal(data, &msg) != nil || (msg.ID == 0 && msg.Method == "") || (msg.ID != 0 && (msg.Method != "" || (msg.Result == nil) == (msg.Error == nil))) {
+		if json.Unmarshal(data, &msg) != nil || (msg.ID == 0 && msg.Method == "") || (msg.ID != 0 && (msg.Method != "" || (msg.Result == nil) == (msg.Error == nil) || (msg.Result != nil && !bytes.HasPrefix(bytes.TrimSpace(msg.Result), []byte("{"))))) {
 			c.fail(failure("protocol", "malformed browser response"))
 			return
 		}
@@ -153,7 +172,7 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 		c.mu.Unlock()
 		return failure("overflow", "64 calls are already in flight")
 	}
-	var dialog <-chan struct{}
+	var dialog, gone <-chan struct{}
 	if state := c.sessions[session]; state != nil {
 		if state.detached {
 			c.mu.Unlock()
@@ -164,6 +183,7 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 			return failure("dialog", "a native dialog prevents completion")
 		}
 		dialog = state.dialog
+		gone = state.gone
 	}
 	c.next++
 	id := c.next
@@ -192,6 +212,8 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 		return ctx.Err()
 	case <-dialog:
 		return failure("dialog", "a native dialog prevents completion")
+	case <-gone:
+		return failure("page", "page session detached during the operation")
 	case <-c.ctx.Done():
 		return c.connectionError()
 	case msg := <-replies:
@@ -233,6 +255,9 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 	}
 	if err := c.call(ctx, "", "Target.getTargets", nil, &result); err != nil {
 		return PagesResult{}, err
+	}
+	if result.Targets == nil {
+		return PagesResult{}, failure("protocol", "browser result has no page list")
 	}
 	pages := PagesResult{Pages: []PageInfo{}}
 	for _, t := range result.Targets {

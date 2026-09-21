@@ -26,8 +26,12 @@ func endpointURL(ctx context.Context, endpoint string) (string, error) {
 	default:
 		return "", failure("invalid_input", "endpoint must use HTTP(S) or WS(S)")
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/json/version"
-	u.RawPath = ""
+	escapedPath := strings.TrimRight(u.EscapedPath(), "/") + "/json/version"
+	u.Path, err = url.PathUnescape(escapedPath)
+	if err != nil {
+		return "", failure("invalid_input", "invalid browser endpoint path")
+	}
+	u.RawPath = escapedPath
 	client := http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 || !sameOrigin(req.URL, u) {
 			return failure("connection", "discovery redirect refused")

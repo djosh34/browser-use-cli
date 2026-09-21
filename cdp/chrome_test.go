@@ -4,6 +4,7 @@ package cdp_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -238,6 +239,18 @@ func TestChromeNavigationWaitsForRequestedLoad(t *testing.T) {
 		t.Fatalf("returned before load: %v", err)
 	default:
 	}
+	otherHandle, err := c.Page(testContext(t), "")
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	blockedCtx, cancel := context.WithTimeout(testContext(t), 20*time.Millisecond)
+	_, blockedErr := otherHandle.Info(blockedCtx)
+	cancel()
+	if !errors.Is(blockedErr, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("same-page operation was not serialized: %v", blockedErr)
+	}
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatal(err)
@@ -252,5 +265,48 @@ func TestChromeNavigationWaitsForRequestedLoad(t *testing.T) {
 	info, err = p.Info(testContext(t))
 	if err != nil || !strings.HasSuffix(info.URL, "#section") {
 		t.Fatalf("hash: %+v %v", info, err)
+	}
+}
+
+func TestChromeNavigationFailures(t *testing.T) {
+	release := make(chan struct{})
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dialog":
+			fmt.Fprint(w, `<script>alert("Do not accept me")</script>`)
+		case "/hang":
+			<-release
+		default:
+			fmt.Fprint(w, "<title>Ready</title>")
+		}
+	}))
+	defer fixture.Close()
+	defer close(release)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Page(testContext(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(testContext(t), 100*time.Millisecond)
+	err = p.Navigate(ctx, fixture.URL+"/hang")
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("navigation deadline: %v", err)
+	}
+	if err := p.Navigate(testContext(t), fixture.URL+"/ready"); err != nil {
+		t.Fatalf("navigate after deadline: %v", err)
+	}
+	err = p.Navigate(testContext(t), "http://127.0.0.1:1/")
+	var e *cdp.Error
+	if !errors.As(err, &e) || e.Code != "navigation" {
+		t.Fatalf("navigation error: %v", err)
+	}
+	err = p.Navigate(testContext(t), fixture.URL+"/dialog")
+	if !errors.As(err, &e) || e.Code != "dialog" {
+		t.Fatalf("blocking dialog: %v", err)
+	}
+	// A dialog must not block connection shutdown or an unrelated browser call.
+	if _, err := c.Pages(testContext(t)); err != nil {
+		t.Fatalf("dialog stranded browser call: %v", err)
 	}
 }

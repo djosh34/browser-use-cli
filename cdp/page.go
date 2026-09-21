@@ -14,6 +14,7 @@ type pageState struct {
 	session    string // Protected by Client.mu, as are the event/dialog fields.
 	events     chan response
 	dialog     chan struct{}
+	gone       chan struct{}
 	dialogOpen bool
 	detached   bool
 }
@@ -54,7 +55,7 @@ func (c *Client) pageHandle(id PageID) (*Page, error) {
 		if len(c.pages) >= sessionLimit {
 			return nil, failure("overflow", "too many attached pages in this client")
 		}
-		state = &pageState{gate: make(chan struct{}, 1), dialog: make(chan struct{})}
+		state = &pageState{gate: make(chan struct{}, 1), dialog: make(chan struct{}), gone: make(chan struct{})}
 		c.pages[id] = state
 	}
 	return &Page{c, id, state}, nil
@@ -127,7 +128,10 @@ func (p *Page) attach(ctx context.Context) error {
 		if err := c.call(ctx, result.Session, method, params, nil); err != nil {
 			// A partially initialized session must not be reused as though it were ready.
 			c.mu.Lock()
-			p.state.detached = true
+			if !p.state.detached {
+				p.state.detached = true
+				close(p.state.gone)
+			}
 			c.mu.Unlock()
 			return err
 		}
@@ -319,8 +323,11 @@ func (c *Client) routeEvent(ev response) error {
 		state.dialogOpen = false
 		state.dialog = make(chan struct{})
 	case "Target.detachedFromTarget", "Inspector.detached":
-		state.detached = true
-	case "Page.lifecycleEvent", "Page.navigatedWithinDocument", "Page.frameNavigated", "Page.frameStartedLoading", "Page.frameStoppedLoading":
+		if !state.detached {
+			state.detached = true
+			close(state.gone)
+		}
+	case "Page.lifecycleEvent", "Page.navigatedWithinDocument":
 	default:
 		return nil
 	}

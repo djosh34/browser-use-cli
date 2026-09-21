@@ -134,6 +134,8 @@ func TestPeerFailuresAreBoundedAndRedacted(t *testing.T) {
 		{"both result and error", `{"id":2,"result":{},"error":{"code":-1,"message":"secret-token"}}`, "protocol"},
 		{"protocol error", `{"id":2,"error":{"code":-32000,"message":"secret-token"}}`, "protocol"},
 		{"invalid result", `{"id":2,"result":"secret-token"}`, "protocol"},
+		{"null result", `{"id":2,"result":null}`, "protocol"},
+		{"missing page list", `{"id":2,"result":{}}`, "protocol"},
 		{"wrong session", `{"id":2,"sessionId":"other","result":{}}`, "protocol"},
 		{"disconnect", "", "connection"},
 	} {
@@ -153,6 +155,30 @@ func TestPeerFailuresAreBoundedAndRedacted(t *testing.T) {
 				t.Fatalf("failure: %v", err)
 			}
 		})
+	}
+}
+
+func TestOversizeBrowserMessageFailsExplicitly(t *testing.T) {
+	c := connectPeer(t, func(ctx context.Context, conn *websocket.Conn) {
+		if _, err := receive(ctx, conn); err != nil {
+			return
+		}
+		w, err := conn.Writer(ctx, websocket.MessageText)
+		if err != nil {
+			return
+		}
+		defer w.Close()
+		chunk := []byte(strings.Repeat(" ", 1<<20))
+		for range 65 {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	_, err := c.Pages(testContext(t))
+	var e *cdp.Error
+	if !errors.As(err, &e) || e.Code != "overflow" {
+		t.Fatalf("message bound: %v", err)
 	}
 }
 
