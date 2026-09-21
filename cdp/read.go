@@ -103,10 +103,12 @@ type snapshotNode struct {
 		Name  string `json:"name"`
 		Value string `json:"value"`
 	} `json:"attributes"`
-	Frame      string `json:"frameId"`
-	URL        string `json:"documentURL"`
-	InputValue string `json:"inputValue"`
-	TextValue  string `json:"textValue"`
+	Frame          string `json:"frameId"`
+	URL            string `json:"documentURL"`
+	InputValue     string `json:"inputValue"`
+	InputChecked   bool   `json:"inputChecked"`
+	OptionSelected bool   `json:"optionSelected"`
+	TextValue      string `json:"textValue"`
 }
 
 func (n snapshotNode) attr(name string) string {
