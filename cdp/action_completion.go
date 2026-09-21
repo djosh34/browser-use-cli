@@ -32,14 +32,25 @@ func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
 		return nil, err
 	}
 	a := &inputObservation{before: before, documents: documents, events: make(chan response, eventLimit)}
-	seen := map[string]bool{}
+	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
+		p.endInput(a)
+		return nil, err
+	}
+	return a, nil
+}
+func (p *Page) observeInputDocuments(ctx context.Context, a *inputObservation, documents []documentCapture) error {
+	var err error
+	added := []string{}
 	p.client.mu.Lock()
 	for _, doc := range documents {
-		if seen[doc.session] {
+		state := p.client.sessions[doc.session]
+		if state != nil && state.events == a.events {
 			continue
 		}
-		seen[doc.session] = true
-		state := p.client.sessions[doc.session]
+		if len(a.states) >= sessionLimit+1 {
+			err = failure("overflow", "too many input frame-session transitions")
+			break
+		}
 		if state == nil || state.detached {
 			err = failure("page", "frame detached before input")
 			break
@@ -51,22 +62,21 @@ func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
 		state.events = a.events
 		state.inputEvents = true
 		a.states = append(a.states, state)
+		added = append(added, doc.session)
 	}
 	p.client.mu.Unlock()
 	if err != nil {
-		p.endInput(a)
-		return nil, err
+		return err
 	}
-	for session := range seen {
+	for _, session := range added {
 		if session == p.state.session {
 			continue
 		}
 		if err := p.client.call(ctx, session, "Page.setLifecycleEventsEnabled", map[string]bool{"enabled": true}, nil); err != nil {
-			p.endInput(a)
-			return nil, err
+			return err
 		}
 	}
-	return a, nil
+	return nil
 }
 func (p *Page) endInput(a *inputObservation) {
 	p.client.mu.Lock()
@@ -79,26 +89,25 @@ func (p *Page) endInput(a *inputObservation) {
 	}
 }
 
-// A successful input can move an OOPIF into its parent's renderer. Re-resolve
-// only the completion context, never the input target or the mutation.
-func (p *Page) settleInputFrame(ctx context.Context, actor documentCapture) error {
-	p.client.mu.Lock()
-	state := p.client.sessions[actor.session]
-	changed := state == nil || state.detached
-	p.client.mu.Unlock()
-	if changed {
-		documents, _, err := p.documents(ctx)
-		if err != nil {
-			return err
-		}
-		for _, doc := range documents {
-			if doc.frame.ID == actor.frame.ID {
-				return p.settleFrame(ctx, doc, false)
-			}
-		}
-		return nil // The completed input may have removed its own frame.
+// Input can move a frame into or out of a remote renderer. Refresh only the
+// completion contexts and lifecycle observation, never the mutation.
+func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor documentCapture) error {
+	documents, warnings, err := p.documents(ctx)
+	if err != nil {
+		return err
 	}
-	return p.settleFrame(ctx, actor, false)
+	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
+		return err
+	}
+	for _, doc := range documents {
+		if doc.frame.ID == actor.frame.ID {
+			return p.settleFrame(ctx, doc, false)
+		}
+	}
+	if len(warnings) != 0 {
+		return failure("unavailable", "input frame changed while verifying completion")
+	}
+	return nil // Input may have removed its own frame.
 }
 
 func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor documentCapture) (ActionResult, error) {
@@ -202,7 +211,7 @@ func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor doc
 			return ActionResult{}, err
 		}
 		if settleErr == nil && actor.frame.ID != root.frame.ID && tree.Frame.Loader == root.loader {
-			settleErr = p.settleInputFrame(ctx, actor)
+			settleErr = p.settleInputFrame(ctx, a, actor)
 		}
 		if err := drain(); err != nil {
 			return ActionResult{}, err

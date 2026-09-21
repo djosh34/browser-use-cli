@@ -76,6 +76,13 @@ func TestChromeInputNavigatesRemoteFrameAcrossProcesses(t *testing.T) {
 	if !errors.As(err, &typed) || typed.Code != "stale" {
 		t.Fatalf("old frame document ref: %v", err)
 	}
+	if _, err := p.Click(testContext(t), targetNamed(t, p, "Return inner")); err != nil {
+		t.Fatalf("navigation into new remote renderer: %v", err)
+	}
+	read, err = p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil || !strings.Contains(read.String(), "Nested inner heading") {
+		t.Fatalf("return frame: %s %v", read, err)
+	}
 }
 
 func TestChromeInputDialogInRemoteFrame(t *testing.T) {

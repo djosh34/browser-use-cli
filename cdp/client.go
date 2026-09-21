@@ -86,6 +86,13 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 		c.Close()
 		return nil, failure("protocol", "browser endpoint did not return browser contexts")
 	}
+	// Force creation of newly remote frame agent hosts before navigation.
+	// A default filter preserves ordinary page/iframe listing; discovery
+	// events themselves need no subscription or additional reader state.
+	if err := c.call(ctx, "", "Target.setDiscoverTargets", map[string]bool{"discover": true}, nil); err != nil {
+		c.Close()
+		return nil, err
+	}
 	return c, nil
 }
 

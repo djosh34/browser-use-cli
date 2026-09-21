@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,11 @@ func connectPeer(t *testing.T, serve func(context.Context, *websocket.Conn)) *cd
 			return
 		}
 		reply(ctx, conn, r, map[string]any{"browserContextIds": []string{}})
+		r, err = receive(ctx, conn)
+		if err != nil {
+			return
+		}
+		reply(ctx, conn, r, map[string]any{}) // Target discovery initialization.
 		serve(ctx, conn)
 	})
 	c, err := cdp.Connect(testContext(t), "ws"+strings.TrimPrefix(s.URL, "http")+"/browser?secret=hidden")
@@ -131,21 +137,26 @@ func TestInFlightBoundAndCloseUnblocksCalls(t *testing.T) {
 func TestPeerFailuresAreBoundedAndRedacted(t *testing.T) {
 	for _, tc := range []struct{ name, payload, code string }{
 		{"malformed", "not JSON secret-token", "protocol"},
-		{"both result and error", `{"id":2,"result":{},"error":{"code":-1,"message":"secret-token"}}`, "protocol"},
-		{"protocol error", `{"id":2,"error":{"code":-32000,"message":"secret-token"}}`, "protocol"},
-		{"invalid result", `{"id":2,"result":"secret-token"}`, "protocol"},
-		{"null result", `{"id":2,"result":null}`, "protocol"},
-		{"missing page list", `{"id":2,"result":{}}`, "protocol"},
-		{"wrong session", `{"id":2,"sessionId":"other","result":{}}`, "protocol"},
+		{"both result and error", `{"id":%d,"result":{},"error":{"code":-1,"message":"secret-token"}}`, "protocol"},
+		{"protocol error", `{"id":%d,"error":{"code":-32000,"message":"secret-token"}}`, "protocol"},
+		{"invalid result", `{"id":%d,"result":"secret-token"}`, "protocol"},
+		{"null result", `{"id":%d,"result":null}`, "protocol"},
+		{"missing page list", `{"id":%d,"result":{}}`, "protocol"},
+		{"wrong session", `{"id":%d,"sessionId":"other","result":{}}`, "protocol"},
 		{"disconnect", "", "connection"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := connectPeer(t, func(ctx context.Context, conn *websocket.Conn) {
-				if _, err := receive(ctx, conn); err != nil {
+				r, err := receive(ctx, conn)
+				if err != nil {
 					return
 				}
 				if tc.payload != "" {
-					conn.Write(ctx, websocket.MessageText, []byte(tc.payload))
+					payload := tc.payload
+					if strings.Contains(payload, "%d") {
+						payload = fmt.Sprintf(payload, r.ID)
+					}
+					conn.Write(ctx, websocket.MessageText, []byte(payload))
 					receive(ctx, conn)
 				}
 			})
@@ -247,6 +258,10 @@ func TestEndpointSecurity(t *testing.T) {
 			req, err := receive(r.Context(), conn)
 			if err == nil {
 				reply(r.Context(), conn, req, json.RawMessage(`{"browserContextIds":[]}`))
+			}
+			req, err = receive(r.Context(), conn)
+			if err == nil {
+				reply(r.Context(), conn, req, map[string]any{})
 			}
 			receive(r.Context(), conn)
 		}))
