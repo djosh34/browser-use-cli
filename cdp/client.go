@@ -35,14 +35,17 @@ type pendingCall struct {
 // Client owns one browser connection. Its methods are safe for concurrent use.
 // Calls on the same page are serialized; other clients are not globally locked.
 type Client struct {
-	conn    *websocket.Conn
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	mu      sync.Mutex
-	next    int64
-	pending map[int64]pendingCall
-	err     error
+	conn     *websocket.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mu       sync.Mutex
+	next     int64
+	pending  map[int64]pendingCall
+	err      error
+	pages    map[PageID]*pageState
+	sessions map[string]*pageState
+	openGate chan struct{}
 }
 
 // Connect discovers or directly connects to a browser-level endpoint. ctx bounds
@@ -66,7 +69,7 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 	}
 	conn.SetReadLimit(messageLimit)
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall)}
+	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[PageID]*pageState), sessions: make(map[string]*pageState), openGate: make(chan struct{}, 1)}
 	go c.read()
 	// This browser-only command also rejects page-level connections behind proxies.
 	var contexts struct {
@@ -117,6 +120,10 @@ func (c *Client) read() {
 			return
 		}
 		if msg.ID == 0 {
+			if err := c.routeEvent(msg); err != nil {
+				c.fail(err)
+				return
+			}
 			continue
 		}
 		c.mu.Lock()
@@ -146,6 +153,18 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 		c.mu.Unlock()
 		return failure("overflow", "64 calls are already in flight")
 	}
+	var dialog <-chan struct{}
+	if state := c.sessions[session]; state != nil {
+		if state.detached {
+			c.mu.Unlock()
+			return failure("page", "page session is detached")
+		}
+		if state.dialogOpen {
+			c.mu.Unlock()
+			return failure("dialog", "a native dialog prevents completion")
+		}
+		dialog = state.dialog
+	}
 	c.next++
 	id := c.next
 	replies := make(chan response, 1)
@@ -171,6 +190,8 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-dialog:
+		return failure("dialog", "a native dialog prevents completion")
 	case <-c.ctx.Done():
 		return c.connectionError()
 	case msg := <-replies:
