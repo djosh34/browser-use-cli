@@ -50,29 +50,42 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	if err := p.attach(ctx); err != nil {
 		return ReadResult{}, err
 	}
-	if opts.Selector != "" {
-		return ReadResult{}, failure("invalid_input", "selector collection is not available yet")
-	}
 	info, err := p.info(ctx)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	captured, err := p.snapshot(ctx, p.state.session)
+	documents, warnings, err := p.documents(ctx)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	result := ReadResult{Page: info, Sections: []ReadSection{}}
-	for i, node := range captured.Nodes {
-		if node.Type != 9 {
-			continue
+	result := ReadResult{Page: info, Sections: []ReadSection{}, Warnings: warnings}
+	matches := map[string]map[int64]bool{}
+	for _, doc := range documents {
+		var selected map[int64]bool
+		if opts.Selector != "" {
+			var ok bool
+			selected, ok = matches[doc.session]
+			if !ok {
+				selected, err = p.selectorMatches(ctx, doc.session, opts.Selector)
+				if err != nil {
+					return ReadResult{}, err
+				}
+				matches[doc.session] = selected
+			}
 		}
-		text, err := captured.readDocument(i)
+		text, matched, err := doc.snapshot.readDocument(doc.root, selected)
 		if err != nil {
 			return ReadResult{}, err
 		}
-		result.Sections = append(result.Sections, ReadSection{Frame: FrameInfo{node.Frame, node.URL}, Text: text})
+		if opts.Selector != "" && !matched {
+			continue
+		}
+		result.Sections = append(result.Sections, ReadSection{Frame: doc.frame, Text: text})
 	}
 	if len(result.Sections) == 0 {
+		if opts.Selector != "" {
+			return ReadResult{}, failure("invalid_input", "selector matched no rendered region")
+		}
 		return ReadResult{}, failure("unavailable", "browser returned no readable document")
 	}
 	return result, nil
@@ -158,23 +171,26 @@ func (s *domSnapshot) layout(n snapshotNode) *snapshotLayout {
 	}
 	return &s.Layouts[*n.Layout]
 }
-func (s *domSnapshot) readDocument(root int) (string, error) {
+func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, bool, error) {
 	var b strings.Builder
+	matched := false
 	seen := make(map[int]bool)
-	var walk func(int) error
-	walk = func(index int) error {
+	var walk func(int, bool) error
+	walk = func(index int, within bool) error {
 		if index < 0 || index >= len(s.Nodes) || seen[index] {
 			return failure("protocol", "invalid snapshot node tree")
 		}
 		seen[index] = true
 		n := s.Nodes[index]
+		within = within || selected[n.Backend]
 		layout := s.layout(n)
 		if s.style(layout, "display") == "none" || s.style(layout, "opacity") == "0" || s.style(layout, "content-visibility") == "hidden" || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
 			return nil
 		}
 		visible := layout != nil && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
 		block := false
-		if visible {
+		if visible && within {
+			matched = true
 			switch n.Name {
 			case "H1", "H2", "H3", "H4", "H5", "H6":
 				fmt.Fprintf(&b, "\n%s ", strings.Repeat("#", int(n.Name[1]-'0')))
@@ -202,7 +218,7 @@ func (s *domSnapshot) readDocument(root int) (string, error) {
 			}
 		}
 		for _, child := range n.Children {
-			if err := walk(child); err != nil {
+			if err := walk(child, within); err != nil {
 				return err
 			}
 		}
@@ -211,8 +227,8 @@ func (s *domSnapshot) readDocument(root int) (string, error) {
 		}
 		return nil
 	}
-	if err := walk(root); err != nil {
-		return "", err
+	if err := walk(root, selected == nil); err != nil {
+		return "", false, err
 	}
 	// Preserve inline text and table separators; collapse only empty block lines.
 	var lines []string
@@ -222,5 +238,5 @@ func (s *domSnapshot) readDocument(root int) (string, error) {
 			lines = append(lines, line)
 		}
 	}
-	return strings.Join(lines, "\n"), nil
+	return strings.Join(lines, "\n"), matched, nil
 }
