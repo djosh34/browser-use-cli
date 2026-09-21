@@ -105,8 +105,8 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 			if node.Type != 9 || hidden[node.Frame] {
 				continue
 			}
-			var owners func(int, bool) error
-			owners = func(i int, suppressed bool) error {
+			var owners func(int, bool, clipRegion) error
+			owners = func(i int, suppressed bool, clip clipRegion) error {
 				if i < 0 || i >= len(snapshot.Nodes) {
 					return failure("protocol", "invalid frame owner tree")
 				}
@@ -137,20 +137,20 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 						remote.Frame.ID = frameID
 						addTree(remote, node.Frame)
 					}
-					hidden[frameID] = suppressed || layout == nil || layout.Bounds.Width <= 0 || layout.Bounds.Height <= 0 || snapshot.style(layout, "visibility") == "hidden" || snapshot.style(layout, "visibility") == "collapse"
+					hidden[frameID] = suppressed || layout == nil || layout.Bounds.Width <= 0 || layout.Bounds.Height <= 0 || clip.excludes(layout.Bounds) || snapshot.style(layout, "visibility") == "hidden" || snapshot.style(layout, "visibility") == "collapse"
 					if layout != nil {
 						bounds := layout.Bounds
 						ownerBounds[frameID] = &bounds
 					}
 				}
 				for _, child := range n.Children {
-					if err := owners(child, suppressed); err != nil {
+					if err := owners(child, suppressed, snapshot.childClip(clip, layout)); err != nil {
 						return err
 					}
 				}
 				return nil
 			}
-			if err := owners(rootIndex, false); err != nil {
+			if err := owners(rootIndex, false, clipRegion{}); err != nil {
 				return nil, nil, err
 			}
 		}

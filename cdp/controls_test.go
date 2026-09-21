@@ -17,10 +17,30 @@ func controlsFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form><div onclick="this.dataset.used='yes'" style="cursor:pointer"><span>Custom choice</span></div><ul onclick="this.dataset.used=event.target.textContent"><li style="cursor:pointer">Delegated Amsterdam</li><li style="cursor:pointer">Delegated Utrecht</li></ul><p style="cursor:pointer">Decorative pointer</p><div tabindex="0">Focus-only container</div><div role="textbox" contenteditable aria-label="Editor">Editable text</div><input type="checkbox" id="mixed" aria-label="Mixed"><button aria-expanded="true">Expander</button><div role="listbox" aria-label="Choices"><div role="option" aria-selected="true">Selected item</div></div><div style="height:0;overflow:hidden"><button>Collapsed button</button></div><script>document.querySelector('#mixed').indeterminate=true;document.addEventListener('click',()=>{});addEventListener('scroll',()=>document.title='SCROLLED');</script>`)
+		fmt.Fprint(w, `<!doctype html><title>Controls fixture</title><article><h2>Alpha story</h2><a href="/alpha">Read more</a></article><article><h2>Beta story</h2><a href="/beta">Read more</a></article><form><label>Search <input id="search" value="initial"></label><p>Unlabelled preference <input type="checkbox" checked></p><label>Password <input type="password" value="private-password"></label><label>Units <select><option value="metric">Metric</option><option value="imperial" selected>Imperial</option><option disabled>Disabled option</option></select></label><input aria-label="Readonly" readonly value="fixed"><button disabled>Disabled button</button><button aria-disabled="true">ARIA disabled</button><div inert><button>Inert button</button></div><button hidden>Hidden button</button><button style="opacity:0">Transparent button</button><div style="margin-top:2000px"><button>Offscreen button</button></div></form><div onclick="this.dataset.used='yes'" style="cursor:pointer"><span>Custom choice</span></div><ul onclick="this.dataset.used=event.target.textContent"><li style="cursor:pointer">Delegated Amsterdam</li><li style="cursor:pointer">Delegated Utrecht</li></ul><p style="cursor:pointer">Decorative pointer</p><div tabindex="0">Focus-only container</div><div role="textbox" contenteditable aria-label="Editor">Editable text</div><input type="checkbox" id="mixed" aria-label="Mixed"><button aria-expanded="true"><span onclick="this.dataset.used='yes'">Expander</span></button><div role="listbox" aria-label="Choices"><div role="option" aria-selected="true">Selected item</div></div><div style="height:0;overflow:hidden"><button>Collapsed button</button></div><script>document.querySelector('#mixed').indeterminate=true;document.addEventListener('click',()=>{});addEventListener('scroll',()=>document.title='SCROLLED');</script>`)
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+func TestChromeControlsResolveHTMLBase(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<base href="/catalog/"><a href="item">Item</a>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Controls) != 1 || result.Controls[0].Href != fixture.URL+"/catalog/item" {
+		t.Fatalf("base-relative href: %s", result)
+	}
 }
 
 func TestChromeControlsCaptureLargeNativeSelectWithoutShadowDuplicates(t *testing.T) {
@@ -61,7 +81,7 @@ func TestChromeControlsCaptureLargeNativeSelectWithoutShadowDuplicates(t *testin
 func TestChromeControlsKeepContextFromLongLocalParagraphs(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<article><p>A long report about education. `+strings.Repeat("More report details. ", 30)+`<a href="/education">Read more</a></p></article><article><p>A long report about weather. `+strings.Repeat("More report details. ", 30)+`<a href="/weather">Read more</a></p></article>`)
+		fmt.Fprint(w, `<article><p>A long report about education. `+strings.Repeat("More report details. ", 30)+`<a href="/education">Read more</a></p></article><article><p>A long report about weather. `+strings.Repeat("More report details. ", 30)+`<a href="/weather">Read more</a></p></article><p>`+strings.Repeat("Shared boilerplate. ", 30)+`Near-end transport topic <a href="/transport">Read more</a></p><p>`+strings.Repeat("Shared boilerplate. ", 30)+`Near-end housing topic <a href="/housing">Read more</a></p>`)
 	}))
 	defer fixture.Close()
 	c := browserClient(t, chrome(t, "about:blank"))
@@ -73,10 +93,10 @@ func TestChromeControlsKeepContextFromLongLocalParagraphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Controls) != 2 {
+	if len(result.Controls) != 4 {
 		t.Fatalf("controls: %s", result)
 	}
-	for i, topic := range []string{"education", "weather"} {
+	for i, topic := range []string{"education", "weather", "Near-end transport", "Near-end housing"} {
 		control := result.Controls[i]
 		if control.Name != "Read more" || !strings.Contains(control.Context, topic) || len([]rune(control.Context)) > 240 {
 			t.Errorf("local context: %+v", control)
@@ -124,6 +144,33 @@ func TestChromeVerboseControlsUseLocalInteractionEvidence(t *testing.T) {
 	info, err := p.Info(testContext(t))
 	if err != nil || info.Title != "Controls fixture" {
 		t.Fatalf("observation scrolled: %+v %v", info, err)
+	}
+}
+
+func TestChromeObservationExcludesFullyClippedContent(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<div style="height:1px;overflow:hidden"><p style="margin-top:20px">Clipped text<button>Clipped button</button></p></div><div style="height:20px;overflow:auto"><button style="margin-top:100px">Scrollable button</button></div>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read.String(), "Clipped") || !strings.Contains(read.String(), "Scrollable button") {
+		t.Fatalf("clipped read: %s", read)
+	}
+	controls, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(controls.Controls) != 1 || controls.Controls[0].Name != "Scrollable button" {
+		t.Fatalf("clipped controls: %s", controls)
 	}
 }
 

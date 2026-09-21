@@ -2,6 +2,7 @@ package cdp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -18,7 +19,29 @@ type domNode struct {
 
 // selectorMatches asks Chrome to parse CSS in each document/shadow scope. The
 // returned identities refer to the same snapshot nodes used by text collection.
-func (p *Page) selectorMatches(ctx context.Context, session, selector string) (map[int64]bool, error) {
+func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selector string) (map[int64]bool, error) {
+	session := doc.session
+	world, err := p.isolatedWorld(ctx, doc)
+	if err != nil {
+		return nil, err
+	}
+	quoted, _ := json.Marshal(selector)
+	var syntax struct {
+		Result struct {
+			Value *bool `json:"value"`
+		} `json:"result"`
+		Exception json.RawMessage `json:"exceptionDetails"`
+	}
+	err = p.client.call(ctx, session, "Runtime.evaluate", map[string]any{"contextId": world, "returnByValue": true, "expression": "(s=>{try{document.querySelector(s);return true}catch{return false}})(" + string(quoted) + ")"}, &syntax)
+	if err != nil {
+		return nil, err
+	}
+	if syntax.Exception != nil || syntax.Result.Value == nil {
+		return nil, failure("unavailable", "document changed during selector validation")
+	}
+	if !*syntax.Result.Value {
+		return nil, failure("invalid_input", "invalid CSS selector")
+	}
 	var document struct {
 		Root domNode `json:"root"`
 	}
@@ -55,7 +78,7 @@ func (p *Page) selectorMatches(ctx context.Context, session, selector string) (m
 		if err := p.client.call(ctx, session, "DOM.querySelectorAll", map[string]any{"nodeId": scope, "selector": selector}, &result); err != nil {
 			var e *Error
 			if errors.As(err, &e) && e.Code == "protocol" {
-				return nil, failure("invalid_input", "CSS selector could not be evaluated")
+				return nil, failure("unavailable", "document changed during selector collection")
 			}
 			return nil, err
 		}

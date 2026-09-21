@@ -66,7 +66,7 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 			var ok bool
 			selected, ok = matches[doc.session]
 			if !ok {
-				selected, err = p.selectorMatches(ctx, doc.session, opts.Selector)
+				selected, err = p.selectorMatches(ctx, doc, opts.Selector)
 				if err != nil {
 					return ReadResult{}, err
 				}
@@ -84,6 +84,9 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	}
 	if len(result.Sections) == 0 {
 		if opts.Selector != "" {
+			if len(warnings) > 0 {
+				return ReadResult{}, failure("unavailable", "no selector match was captured and some frames were unavailable")
+			}
 			return ReadResult{}, failure("invalid_input", "selector matched no rendered region")
 		}
 		return ReadResult{}, failure("unavailable", "browser returned no readable document")
@@ -108,6 +111,7 @@ type snapshotNode struct {
 	} `json:"attributes"`
 	Frame          string `json:"frameId"`
 	URL            string `json:"documentURL"`
+	BaseURL        string `json:"baseURL"`
 	InputValue     string `json:"inputValue"`
 	InputChecked   bool   `json:"inputChecked"`
 	Clickable      bool   `json:"isClickable"`
@@ -198,8 +202,8 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		b.WriteByte('\n')
 	}
 	seen := make(map[int]bool)
-	var walk func(int, bool) error
-	walk = func(index int, within bool) error {
+	var walk func(int, bool, clipRegion) error
+	walk = func(index int, within bool, clip clipRegion) error {
 		if index < 0 || index >= len(s.Nodes) || seen[index] {
 			return failure("protocol", "invalid snapshot node tree")
 		}
@@ -210,7 +214,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		if s.suppresses(layout) || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
 			return nil
 		}
-		visible := layout != nil && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
+		visible := layout != nil && !clip.excludes(layout.Bounds) && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
 		block := false
 		if visible && within {
 			matched = true
@@ -248,7 +252,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 			}
 		}
 		for _, child := range n.Children {
-			if err := walk(child, within); err != nil {
+			if err := walk(child, within, s.childClip(clip, layout)); err != nil {
 				return err
 			}
 		}
@@ -257,7 +261,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		}
 		return nil
 	}
-	if err := walk(root, selected == nil); err != nil {
+	if err := walk(root, selected == nil, clipRegion{}); err != nil {
 		return "", false, err
 	}
 	// Preserve inline text and table separators; omit empty block/list markers.

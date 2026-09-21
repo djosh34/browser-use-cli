@@ -168,8 +168,8 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 				parent[child] = index
 			}
 		}
-		var walk func(int, bool) error
-		walk = func(index int, blocked bool) error {
+		var walk func(int, bool, clipRegion) error
+		walk = func(index int, blocked bool, clip clipRegion) error {
 			if index < 0 || index >= len(s.Nodes) {
 				return failure("protocol", "invalid control node tree")
 			}
@@ -182,7 +182,7 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 			if role == "" || role == "generic" || role == "none" {
 				role = native
 			}
-			available := !blocked && !n.hasAttr("disabled") && !a.property("disabled").boolean() && layout != nil && layout.Bounds.Width > 0 && layout.Bounds.Height > 0 && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
+			available := !blocked && !n.hasAttr("disabled") && !a.property("disabled").boolean() && layout != nil && layout.Bounds.Width > 0 && layout.Bounds.Height > 0 && !clip.excludes(layout.Bounds) && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
 			semantic := (native != "" || interactiveRole(role))
 			extra := opts.Verbose && !semantic && s.domTarget(index, parent)
 			if available && ((semantic && (!a.Ignored || native != "")) || extra) {
@@ -201,7 +201,11 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 					c.Context = s.plainText(index)
 				}
 				if n.Name == "A" || n.Name == "AREA" {
-					if base, err := url.Parse(doc.frame.URL); err == nil {
+					baseURL := s.Nodes[doc.root].BaseURL
+					if baseURL == "" {
+						baseURL = doc.frame.URL
+					}
+					if base, err := url.Parse(baseURL); err == nil {
 						if href, err := url.Parse(n.attr("href")); err == nil {
 							c.Href = base.ResolveReference(href).String()
 						}
@@ -221,13 +225,13 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 				return nil
 			}
 			for _, child := range n.Children {
-				if err := walk(child, blocked); err != nil {
+				if err := walk(child, blocked, s.childClip(clip, layout)); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		if err := walk(doc.root, false); err != nil {
+		if err := walk(doc.root, false, clipRegion{}); err != nil {
 			return ControlsResult{}, err
 		}
 	}
@@ -242,6 +246,12 @@ func (p *Page) Controls(ctx context.Context, opts ControlsOptions) (ControlsResu
 // document-wide listener alone is not enough.
 func (s *domSnapshot) domTarget(index int, parents map[int]int) bool {
 	n := s.Nodes[index]
+	for ancestor, ok := parents[index]; ok; ancestor, ok = parents[ancestor] {
+		parent := s.Nodes[ancestor]
+		if nativeRole(parent) != "" || interactiveRole(parent.attr("role")) {
+			return false
+		}
+	}
 	if n.Type != 1 {
 		return false
 	}
@@ -411,7 +421,8 @@ func (s *domSnapshot) controlContext(index int, parents map[int]int) string {
 	}
 	runes := []rune(context)
 	if len(runes) > 240 {
-		return string(runes[:237]) + "..."
+		// Keep both the opening topic and text next to a trailing control.
+		return string(runes[:96]) + "..." + string(runes[len(runes)-141:])
 	}
 	return context
 }

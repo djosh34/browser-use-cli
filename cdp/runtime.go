@@ -16,11 +16,22 @@ func outsideViewport(bounds, viewport viewportRect) bool {
 	return bounds.X+bounds.Width <= viewport.X || bounds.Y+bounds.Height <= viewport.Y || bounds.X >= viewport.X+viewport.Width || bounds.Y >= viewport.Y+viewport.Height
 }
 
-func (p *Page) viewport(ctx context.Context, doc documentCapture) (viewportRect, error) {
+func (p *Page) isolatedWorld(ctx context.Context, doc documentCapture) (int64, error) {
 	var world struct {
 		ID int64 `json:"executionContextId"`
 	}
 	if err := p.client.call(ctx, doc.session, "Page.createIsolatedWorld", map[string]any{"frameId": doc.frame.ID, "worldName": "browser-use-cli"}, &world); err != nil {
+		return 0, err
+	}
+	if world.ID == 0 {
+		return 0, failure("unavailable", "frame has no execution context")
+	}
+	return world.ID, nil
+}
+
+func (p *Page) viewport(ctx context.Context, doc documentCapture) (viewportRect, error) {
+	world, err := p.isolatedWorld(ctx, doc)
+	if err != nil {
 		return viewportRect{}, err
 	}
 	var result struct {
@@ -29,8 +40,8 @@ func (p *Page) viewport(ctx context.Context, doc documentCapture) (viewportRect,
 		} `json:"result"`
 		Exception json.RawMessage `json:"exceptionDetails"`
 	}
-	err := p.client.call(ctx, doc.session, "Runtime.evaluate", map[string]any{
-		"contextId": world.ID, "expression": "({x:scrollX,y:scrollY,width:innerWidth,height:innerHeight})", "returnByValue": true,
+	err = p.client.call(ctx, doc.session, "Runtime.evaluate", map[string]any{
+		"contextId": world, "expression": "({x:scrollX,y:scrollY,width:innerWidth,height:innerHeight})", "returnByValue": true,
 	}, &result)
 	if err != nil {
 		return viewportRect{}, err
