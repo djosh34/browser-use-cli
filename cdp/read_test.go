@@ -22,13 +22,13 @@ func observationFixture(t *testing.T) *httptest.Server {
 		cross := strings.Replace(s.URL, "127.0.0.1", "localhost", 1)
 		switch r.URL.Path {
 		case "/":
-			fmt.Fprintf(w, `<!doctype html><title>Frames and shadows</title><h1>Root heading</h1><button>Root button</button><div class="region">Root region <span class="region">nested region</span></div><div>Outside selector</div><div id="open"></div><div id="closed"></div><script>document.querySelector('#open').attachShadow({mode:'open'}).innerHTML='<p class="region">Open shadow text</p><button>Open shadow button</button>';document.querySelector('#closed').attachShadow({mode:'closed'}).innerHTML='<p class="region">Closed shadow text</p><button>Closed shadow button</button>';</script><iframe src="%s/same"></iframe>`, s.URL)
+			fmt.Fprintf(w, `<!doctype html><title>Frames and shadows</title><h1>Root heading</h1><button onclick="this.textContent+=String.fromCharCode(33)">Root button</button><div class="region">Root region <span class="region">nested region</span></div><div>Outside selector</div><div id="open"></div><div id="closed"></div><script>document.querySelector('#open').attachShadow({mode:'open'}).innerHTML='<p class="region">Open shadow text</p><button onclick="this.textContent+=String.fromCharCode(33)">Open shadow button</button>';document.querySelector('#closed').attachShadow({mode:'closed'}).innerHTML='<p class="region">Closed shadow text</p><button onclick="this.textContent+=String.fromCharCode(33)">Closed shadow button</button>';</script><iframe style="margin-top:900px;border:7px solid" src="%s/same"></iframe>`, s.URL)
 		case "/same":
-			fmt.Fprintf(w, `<h2>Same origin heading</h2><button>Same origin button</button><p class="region">Same origin region</p><iframe src="%s/cross"></iframe>`, cross)
+			fmt.Fprintf(w, `<h2>Same origin heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Same origin button</button><p class="region">Same origin region</p><iframe src="%s/cross"></iframe>`, cross)
 		case "/cross":
-			fmt.Fprintf(w, `<h2>Cross origin heading</h2><button>Cross origin button</button><p class="region">Cross origin region</p><iframe src="%s/inner"></iframe>`, s.URL)
+			fmt.Fprintf(w, `<h2>Cross origin heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Cross origin button</button><p class="region">Cross origin region</p><iframe src="%s/inner"></iframe>`, s.URL)
 		case "/inner":
-			fmt.Fprint(w, `<h2>Nested inner heading</h2><button>Nested inner button</button><p class="region">Nested inner region</p>`)
+			fmt.Fprint(w, `<h2>Nested inner heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Nested inner button</button><p class="region">Nested inner region</p>`)
 		}
 	}))
 	t.Cleanup(s.Close)

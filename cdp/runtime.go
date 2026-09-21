@@ -29,6 +29,23 @@ func (p *Page) isolatedWorld(ctx context.Context, doc documentCapture) (int64, e
 	return world.ID, nil
 }
 
+// settleFrame crosses the next rendering/event turn. Native selection events
+// are queued at that boundary; this does not await later timers or network idle.
+func (p *Page) settleFrame(ctx context.Context, doc documentCapture) error {
+	world, err := p.isolatedWorld(ctx, doc)
+	if err != nil {
+		return err
+	}
+	var result runtimeResult
+	if err := p.client.call(ctx, doc.session, "Runtime.evaluate", map[string]any{"contextId": world, "expression": "new Promise(resolve=>requestAnimationFrame(()=>setTimeout(()=>resolve(true),0)))", "awaitPromise": true, "returnByValue": true}, &result); err != nil {
+		return err
+	}
+	if result.Exception != nil {
+		return failure("unavailable", "frame changed during input completion")
+	}
+	return nil
+}
+
 func (p *Page) viewport(ctx context.Context, doc documentCapture) (viewportRect, error) {
 	world, err := p.isolatedWorld(ctx, doc)
 	if err != nil {

@@ -10,7 +10,8 @@ import (
 // Error describes a failure without including endpoint credentials or raw
 // protocol data. Context cancellation and deadlines retain their standard errors.
 // Code distinguishes invalid_input, connection, protocol, overflow, page,
-// ambiguous, navigation, dialog, unavailable, javascript, and unsupported failures.
+// ambiguous, navigation, dialog, unavailable, stale, blocked, javascript,
+// and unsupported failures.
 type Error struct {
 	Code    string
 	Message string

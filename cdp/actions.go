@@ -172,8 +172,20 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 	if err != nil {
 		return ActionResult{}, err
 	}
+	if err := p.client.call(ctx, target.doc.session, "Input.dispatchMouseEvent", map[string]any{"type": "mouseMoved", "x": point.X, "y": point.Y, "button": "none"}, nil); err != nil {
+		return ActionResult{}, err
+	}
+	// Hover may expose an overlay, replace the node, or move it. Recheck,
+	// but never chase a moving target or repeat a mouse press.
+	verified, err := p.inputPoint(ctx, target)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if verified != point {
+		return ActionResult{}, failure("blocked", "control moved after pointer hover; observe it again")
+	}
 	for _, kind := range []string{"mousePressed", "mouseReleased"} {
-		if err := p.client.call(ctx, p.state.session, "Input.dispatchMouseEvent", map[string]any{"type": kind, "x": point.X, "y": point.Y, "button": "left", "clickCount": 1}, nil); err != nil {
+		if err := p.client.call(ctx, target.doc.session, "Input.dispatchMouseEvent", map[string]any{"type": kind, "x": point.X, "y": point.Y, "button": "left", "clickCount": 1}, nil); err != nil {
 			return ActionResult{}, err
 		}
 	}
@@ -202,6 +214,9 @@ func (p *Page) actionResult(ctx context.Context, before PagesResult) (ActionResu
 }
 
 func (p *Page) inputPoint(ctx context.Context, target resolvedTarget) (point, error) {
+	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
+		return point{}, err
+	}
 	type owner struct {
 		doc     documentCapture
 		object  string
@@ -249,6 +264,9 @@ func (p *Page) inputPoint(ctx context.Context, target resolvedTarget) (point, er
 	}
 	for _, candidate := range candidates.Points {
 		current := candidate
+		// Input coordinates belong to the owning session's root widget, not
+		// necessarily the tab's main frame. Still hit-test every ancestor.
+		dispatch := candidate
 		valid := true
 		for i := len(owners) - 1; i >= 0; i-- {
 			owner := owners[i]
@@ -264,12 +282,15 @@ func (p *Page) inputPoint(ctx context.Context, target resolvedTarget) (point, er
 				break
 			}
 			current = result.Point
+			if owner.doc.session == target.doc.session {
+				dispatch = current
+			}
 		}
 		if valid {
 			if err := p.validateDocuments(ctx, target.chain); err != nil {
 				return point{}, failure("stale", "control document changed before input")
 			}
-			return current, nil
+			return dispatch, nil
 		}
 	}
 	return point{}, failure("blocked", "control has no uncovered input point through its frame chain")
@@ -310,8 +331,10 @@ const clickPoints = `function(){` + inputHelpers + `
 }`
 const framePoint = `function(point){` + inputHelpers + `
  const status=state(this);if(status) return {status};
- const style=getComputedStyle(this),matrix=new DOMMatrix(style.transform==='none'?undefined:style.transform);
- if(!matrix.is2D || Math.abs(matrix.b)>0.00001 || Math.abs(matrix.c)>0.00001 || matrix.a<=0 || matrix.d<=0) return {status:'blocked'};
+ for(let n=this;n;n=n.parentElement || n.getRootNode().host){
+  const style=getComputedStyle(n),matrix=new DOMMatrix(style.transform==='none'?undefined:style.transform);
+  if(!matrix.is2D || Math.abs(matrix.b)>0.00001 || Math.abs(matrix.c)>0.00001 || matrix.a<=0 || matrix.d<=0) return {status:'blocked'};
+ }
  const r=this.getBoundingClientRect();
  if(!this.offsetWidth || !this.offsetHeight || point.x<0 || point.y<0 || point.x>=this.clientWidth || point.y>=this.clientHeight) return {status:'blocked'};
  const x=r.left+(this.clientLeft+point.x)*r.width/this.offsetWidth,y=r.top+(this.clientTop+point.y)*r.height/this.offsetHeight;
