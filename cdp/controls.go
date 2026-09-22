@@ -355,7 +355,7 @@ func controlState(n snapshotNode, a axNode) ControlState {
 		}
 	}
 	s.Checked = a.property("checked").text()
-	if n.Name == "INPUT" && (n.attr("type") == "checkbox" || n.attr("type") == "radio") && s.Checked == "" {
+	if n.Name == "INPUT" && (strings.EqualFold(n.attr("type"), "checkbox") || strings.EqualFold(n.attr("type"), "radio")) && s.Checked == "" {
 		s.Checked = fmt.Sprint(n.InputChecked)
 	}
 	if n.Name == "INPUT" && !strings.EqualFold(n.attr("type"), "password") {
@@ -390,33 +390,89 @@ func (s *domSnapshot) plainText(index int) string {
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
 }
+
+// Legacy forms often put a field and its visible text on one BR-delimited
+// line without an associated label. Keep that context separate from its AX name.
+func (s *domSnapshot) nearbyFieldText(index int, parents map[int]int) string {
+	switch s.Nodes[index].Name {
+	case "INPUT", "TEXTAREA", "SELECT":
+	default:
+		return ""
+	}
+	parent, ok := parents[index]
+	if !ok {
+		return ""
+	}
+	siblings := s.Nodes[parent].Children
+	position := -1
+	for i, child := range siblings {
+		if child == index {
+			position = i
+			break
+		}
+	}
+	if position < 0 {
+		return ""
+	}
+	boundary := func(i int) bool {
+		n := s.Nodes[i]
+		switch n.Name {
+		case "BR", "INPUT", "TEXTAREA", "SELECT", "BUTTON", "A":
+			return true
+		}
+		switch s.style(s.layout(n), "display") {
+		case "block", "flex", "grid", "table-row", "list-item":
+			return true
+		}
+		return false
+	}
+	left, right := position, position+1
+	for left > 0 && !boundary(siblings[left-1]) {
+		left--
+	}
+	for right < len(siblings) && !boundary(siblings[right]) {
+		right++
+	}
+	var text strings.Builder
+	for _, child := range siblings[left:right] {
+		if child != index {
+			text.WriteString(s.plainText(child))
+			text.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(text.String()), " ")
+}
 func (s *domSnapshot) controlContext(index int, parents map[int]int) string {
 	context := s.plainText(index)
-	for depth := 0; depth < 3; depth++ {
-		parent, ok := parents[index]
-		if !ok {
-			break
-		}
-		n := s.Nodes[parent]
-		if n.Name == "BODY" || n.Name == "HTML" || n.Name == "FORM" || n.Name == "TABLE" {
-			break
-		}
-		candidate := s.plainText(parent)
-		if len([]rune(candidate)) > 240 {
-			// Keep a bounded excerpt of a local paragraph/card instead of
-			// falling back to an indistinguishable repeated link label.
-			switch n.Name {
-			case "P", "LI", "TR", "ARTICLE", "LABEL":
+	if local := s.nearbyFieldText(index, parents); local != "" {
+		context = local
+	} else {
+		for depth := 0; depth < 3; depth++ {
+			parent, ok := parents[index]
+			if !ok {
+				break
+			}
+			n := s.Nodes[parent]
+			if n.Name == "BODY" || n.Name == "HTML" || n.Name == "FORM" || n.Name == "TABLE" {
+				break
+			}
+			candidate := s.plainText(parent)
+			if len([]rune(candidate)) > 240 {
+				// Keep a bounded excerpt of a local paragraph/card instead of
+				// falling back to an indistinguishable repeated link label.
+				switch n.Name {
+				case "P", "LI", "TR", "ARTICLE", "LABEL":
+					context = candidate
+				}
+				break
+			}
+			if candidate != "" {
 				context = candidate
 			}
-			break
-		}
-		if candidate != "" {
-			context = candidate
-		}
-		index = parent
-		if n.Name == "ARTICLE" || n.Name == "LI" || n.Name == "TR" || n.Name == "P" || n.Name == "LABEL" {
-			break
+			index = parent
+			if n.Name == "ARTICLE" || n.Name == "LI" || n.Name == "TR" || n.Name == "P" || n.Name == "LABEL" {
+				break
+			}
 		}
 	}
 	runes := []rune(context)

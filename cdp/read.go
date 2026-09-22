@@ -242,7 +242,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 			if n.Type == 3 {
 				b.WriteString(layout.Text)
 			}
-			if n.Name == "INPUT" && n.attr("type") != "checkbox" && n.attr("type") != "radio" {
+			if n.Name == "INPUT" && !strings.EqualFold(n.attr("type"), "checkbox") && !strings.EqualFold(n.attr("type"), "radio") {
 				b.WriteString(n.InputValue)
 			}
 			if n.Name == "TEXTAREA" {

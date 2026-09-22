@@ -262,6 +262,38 @@ func TestChromeObservationRespectsFrameVisibility(t *testing.T) {
 	}
 }
 
+func TestChromeNativeFieldsUseNearbyLineContext(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<table><tr><td><input type="CHECKBOX" value="t">Temperature<br><input type="CHECKBOX" value="td">Dewpoint<br><input type="CHECKBOX" value="wind">Surface Wind<select><option>mph</option><option>km/h</option></select></td><td>Transport Wind<select><option>mph</option><option>km/h</option></select></td></tr></table>`)
+	}))
+	t.Cleanup(fixture.Close)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Temperature", "Dewpoint", "Surface Wind", "Surface Wind", "Transport Wind"}
+	if len(result.Controls) != len(want) {
+		t.Fatalf("controls: %s", result)
+	}
+	for i, control := range result.Controls {
+		if control.Name != "" || control.Context != want[i] {
+			t.Fatalf("field %d: semantic name %q context %q, want unnamed with %q", i, control.Name, control.Context, want[i])
+		}
+	}
+	read, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read.String(), "tTemperature") || strings.Contains(read.String(), "tdDewpoint") || strings.Contains(read.String(), "windSurface") {
+		t.Fatalf("hidden checkbox submission values leaked into visible text: %s", read)
+	}
+}
+
 func TestChromeControlsTraverseFramesAndShadows(t *testing.T) {
 	fixture := observationFixture(t)
 	c := browserClient(t, chrome(t, "about:blank"))
