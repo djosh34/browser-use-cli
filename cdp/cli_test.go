@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -60,6 +61,45 @@ func runCLI(t *testing.T, binary, endpoint string, want int, args ...string) str
 		t.Fatal("failure had no diagnostic")
 	}
 	return stderr.String()
+}
+
+func TestCLIInterruptsBlockedOutput(t *testing.T) {
+	binary := cliBinary(t)
+	endpoint := chrome(t, "about:blank")
+	for _, merged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("merged_stderr=%t", merged), func(t *testing.T) {
+			cmd := exec.CommandContext(testContext(t), binary, "eval", "--json", `'x'.repeat(4*1024*1024)`)
+			cmd.Env = append(os.Environ(), "BROWSER_CDP_URL="+endpoint, "GORACE=atexit_sleep_ms=0")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			output, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			if merged {
+				cmd.Stderr = cmd.Stdout
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { cmd.Process.Kill(); cmd.Wait() }()
+			// The first output byte proves the browser operation finished. Leave the
+			// remaining output unread so writing the captured result blocks on the pipe.
+			if _, err := io.ReadFull(output, make([]byte, 1)); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				t.Fatal(err)
+			}
+			err = cmd.Wait()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 130 || (!merged && !strings.Contains(stderr.String(), `"code":"interrupted"`)) {
+				t.Fatalf("SIGINT while stdout is blocked: %v %s", err, stderr.String())
+			}
+		})
+	}
+	runCLI(t, binary, endpoint, 0, "pages")
 }
 
 func TestCLICancellationSignalsAndBrokenPipe(t *testing.T) {
