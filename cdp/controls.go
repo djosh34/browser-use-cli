@@ -270,7 +270,7 @@ func (s *domSnapshot) domTarget(index int, parents map[int]int) bool {
 				return true
 			}
 			c := s.Nodes[child]
-			if c.Clickable || nativeRole(c) != "" || interactiveRole(c.attr("role")) || nested(child) {
+			if (s.style(s.layout(c), "pointer-events") != "none" && (c.Clickable || nativeRole(c) != "" || interactiveRole(c.attr("role")))) || nested(child) {
 				return true
 			}
 		}
@@ -379,6 +379,12 @@ func (s *domSnapshot) plainText(index int) string {
 	n := s.Nodes[index]
 	if n.Name == "SCRIPT" || n.Name == "STYLE" || n.Name == "SELECT" || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
 		return ""
+	}
+	if n.Name == "INPUT" {
+		switch strings.ToLower(n.attr("type")) {
+		case "button", "submit", "reset":
+			return n.InputValue
+		}
 	}
 	var b strings.Builder
 	if n.Type == 3 {

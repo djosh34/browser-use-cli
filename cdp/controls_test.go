@@ -4,6 +4,7 @@ package cdp_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -259,6 +260,44 @@ func TestChromeObservationRespectsFrameVisibility(t *testing.T) {
 	}
 	if len(controls.Controls) != 1 || controls.Controls[0].Name != "Offscreen frame button" || !controls.Controls[0].Offscreen || len(controls.Warnings) != 0 {
 		t.Fatalf("frame control visibility: %s", controls)
+	}
+}
+
+func TestChromeVerboseKeepsPointerWrapperForKeyboardOnlyChild(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<div style="display:inline-block;padding:8px" onclick="document.title='Calendar opened'"><label style="pointer-events:none"><input type="button" aria-label="Open calendar" value="Open calendar"></label></div><div onclick="document.title='Ordinary'"><button>Ordinary button</button></div>`)
+	}))
+	t.Cleanup(fixture.Close)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := targetNamed(t, p, "Open calendar")
+	_, err = p.Click(testContext(t), ref)
+	var typed *cdp.Error
+	if !errors.As(err, &typed) || typed.Code != "blocked" {
+		t.Fatalf("keyboard-only child must not bypass hit testing: %v", err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{Verbose: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapper cdp.ControlRef
+	extra := 0
+	for _, control := range result.Controls {
+		if control.Source == "dom" {
+			extra++
+			if control.Context == "Open calendar" {
+				wrapper = control.Target
+			}
+		}
+	}
+	if extra != 1 || wrapper == "" {
+		t.Fatalf("missing useful wrapper or duplicate ordinary container: %s", result)
+	}
+	if action, err := p.Click(testContext(t), wrapper); err != nil || action.Page.Title != "Calendar opened" {
+		t.Fatalf("explicit wrapper ref: %s %v", action, err)
 	}
 }
 

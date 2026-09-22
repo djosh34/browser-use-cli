@@ -147,7 +147,7 @@ type domSnapshot struct {
 func (p *Page) snapshot(ctx context.Context, session string) (domSnapshot, error) {
 	var s domSnapshot
 	err := p.client.call(ctx, session, "DOMSnapshot.getSnapshot", map[string]any{
-		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "content-visibility", "overflow-x", "overflow-y"},
+		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "pointer-events", "content-visibility", "overflow-x", "overflow-y"},
 		"includeUserAgentShadowTree": false,
 	}, &s)
 	if err != nil {
