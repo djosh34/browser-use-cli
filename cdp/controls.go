@@ -377,7 +377,7 @@ func (s *domSnapshot) plainText(index int) string {
 		return ""
 	}
 	n := s.Nodes[index]
-	if n.Name == "SCRIPT" || n.Name == "STYLE" || n.Name == "SELECT" || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
+	if strings.EqualFold(n.Name, "script") || strings.EqualFold(n.Name, "style") || n.Name == "SELECT" || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
 		return ""
 	}
 	if n.Name == "INPUT" {

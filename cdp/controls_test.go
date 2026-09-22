@@ -263,6 +263,25 @@ func TestChromeObservationRespectsFrameVisibility(t *testing.T) {
 	}
 }
 
+func TestChromeControlContextOmitsSVGStyles(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<a href="/details">Route details<svg><style>.icon { fill: red }</style></svg></a>`)
+	}))
+	t.Cleanup(fixture.Close)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Controls) != 1 || result.Controls[0].Context != "Route details" {
+		t.Fatalf("non-rendered SVG stylesheet in context: %s", result)
+	}
+}
+
 func TestChromeVerboseKeepsPointerWrapperForKeyboardOnlyChild(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<div style="display:inline-block;padding:8px" onclick="document.title='Calendar opened'"><label style="pointer-events:none"><input type="button" aria-label="Open calendar" value="Open calendar"></label></div><div onclick="document.title='Ordinary'"><button>Ordinary button</button></div>`)
