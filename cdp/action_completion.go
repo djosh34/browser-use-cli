@@ -6,6 +6,9 @@ import (
 	"errors"
 )
 
+const inputFrameLimit = 256
+const inputEventLimit = 4096
+
 // One bounded observation belongs to one serialized input operation. There is
 // no event subscription API, background waiter, or persistent action state.
 type inputObservation struct {
@@ -15,6 +18,7 @@ type inputObservation struct {
 	states     []*sessionState
 	baseline   map[string]string
 	background map[string]bool
+	processed  int
 }
 type inputNavigation struct {
 	loader        string
@@ -32,8 +36,24 @@ type inputLifecycle struct {
 	} `json:"frame"`
 }
 
-func decodeInputLifecycle(ev response) (inputLifecycle, error) {
+func (a *inputObservation) rememberFrame(frame string) error {
+	if frame == "" {
+		return nil
+	}
+	if _, known := a.baseline[frame]; !known {
+		if len(a.baseline) >= inputFrameLimit {
+			return failure("overflow", "too many frames during input")
+		}
+		a.baseline[frame] = ""
+	}
+	return nil
+}
+func (a *inputObservation) lifecycle(ev response) (inputLifecycle, error) {
 	var event inputLifecycle
+	a.processed++
+	if a.processed > inputEventLimit {
+		return event, failure("overflow", "too many lifecycle events during input")
+	}
 	if ev.Method == "Page.javascriptDialogOpening" {
 		return event, failure("dialog", "a native dialog prevents completion")
 	}
@@ -44,17 +64,20 @@ func decodeInputLifecycle(ev response) (inputLifecycle, error) {
 		event.FrameID = event.Frame.ID
 		event.Loader = event.Frame.Loader
 	}
-	return event, nil
+	return event, a.rememberFrame(event.FrameID)
 }
 
 // Events already queued before input belong to preflight/background work.
 // Keep their loader baseline through commit/load, rather than adopting a
 // pre-existing iframe request merely because it commits after the keystroke.
-func (a *inputObservation) startInput() error {
+func (a *inputObservation) startInput(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		select {
 		case ev := <-a.events:
-			event, err := decodeInputLifecycle(ev)
+			event, err := a.lifecycle(ev)
 			if err != nil {
 				return err
 			}
@@ -101,6 +124,9 @@ func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
 	}
 	a := &inputObservation{before: before, documents: documents, events: make(chan response, eventLimit), baseline: map[string]string{}, background: map[string]bool{}}
 	for _, doc := range documents {
+		if err := a.rememberFrame(doc.frame.ID); err != nil {
+			return nil, err
+		}
 		a.baseline[doc.frame.ID] = doc.loader
 	}
 	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
@@ -189,7 +215,7 @@ func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor doc
 	root := a.documents[0]
 	navigations := map[string]*inputNavigation{}
 	handle := func(ev response) error {
-		event, err := decodeInputLifecycle(ev)
+		event, err := a.lifecycle(ev)
 		if err != nil {
 			return err
 		}
@@ -246,6 +272,9 @@ func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor doc
 	}
 	drain := func() error {
 		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			select {
 			case ev := <-a.events:
 				if err := handle(ev); err != nil {

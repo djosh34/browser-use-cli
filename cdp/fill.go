@@ -38,7 +38,7 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if _, err := p.inputPoint(ctx, target); err != nil {
 		return ActionResult{}, err
 	}
-	if err := observation.startInput(); err != nil {
+	if err := observation.startInput(ctx); err != nil {
 		return ActionResult{}, err
 	}
 	var status string

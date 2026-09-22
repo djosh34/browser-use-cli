@@ -120,7 +120,7 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 	if err := p.settleFrame(ctx, observation.documents[0]); err != nil {
 		return ActionResult{}, err
 	}
-	if err := observation.startInput(); err != nil {
+	if err := observation.startInput(ctx); err != nil {
 		return ActionResult{}, err
 	}
 	modifiers := 0
