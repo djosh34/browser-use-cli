@@ -20,9 +20,12 @@ type inputNavigation struct {
 }
 
 func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
-	documents, _, err := p.documents(ctx)
+	documents, warnings, err := p.documents(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if len(warnings) != 0 {
+		return nil, failure("unavailable", "cannot observe every frame before input")
 	}
 	if len(documents) == 0 {
 		return nil, failure("unavailable", "page has no available document")
@@ -96,6 +99,9 @@ func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor 
 	if err != nil {
 		return err
 	}
+	if len(warnings) != 0 {
+		return failure("unavailable", "input frame changed while verifying completion")
+	}
 	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
 		return err
 	}
@@ -106,9 +112,6 @@ func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor 
 			} // Root task/layout already settled.
 			return p.settleFrame(ctx, doc)
 		}
-	}
-	if len(warnings) != 0 {
-		return failure("unavailable", "input frame changed while verifying completion")
 	}
 	return nil // Input may have removed its own frame.
 }
