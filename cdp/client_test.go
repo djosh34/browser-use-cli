@@ -72,6 +72,8 @@ func TestDiscoveryAndCapturedPages(t *testing.T) {
 			switch r.Method {
 			case "Target.getBrowserContexts":
 				reply(ctx, conn, r, map[string]any{"browserContextIds": []string{}})
+			case "Target.setDiscoverTargets":
+				reply(ctx, conn, r, map[string]any{})
 			case "Target.getTargets":
 				reply(ctx, conn, r, map[string]any{"targetInfos": []any{
 					map[string]any{"targetId": "b", "type": "page", "url": "about:blank", "title": "Blank"},

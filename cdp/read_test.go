@@ -17,20 +17,23 @@ import (
 func observationFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	var s *httptest.Server
-	s = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		cross := strings.Replace(s.URL, "127.0.0.1", "localhost", 1)
 		switch r.URL.Path {
 		case "/":
-			fmt.Fprintf(w, `<!doctype html><title>Frames and shadows</title><h1>Root heading</h1><button>Root button</button><div class="region">Root region <span class="region">nested region</span></div><div>Outside selector</div><div id="open"></div><div id="closed"></div><script>document.querySelector('#open').attachShadow({mode:'open'}).innerHTML='<p class="region">Open shadow text</p><button>Open shadow button</button>';document.querySelector('#closed').attachShadow({mode:'closed'}).innerHTML='<p class="region">Closed shadow text</p><button>Closed shadow button</button>';</script><iframe src="%s/same"></iframe>`, s.URL)
+			fmt.Fprintf(w, `<!doctype html><title>Frames and shadows</title><h1>Root heading</h1><button onclick="this.textContent+=String.fromCharCode(33)">Root button</button><div class="region">Root region <span class="region">nested region</span></div><div>Outside selector</div><div id="open"></div><div id="closed"></div><script>document.querySelector('#open').attachShadow({mode:'open'}).innerHTML='<p class="region">Open shadow text</p><button onclick="this.textContent+=String.fromCharCode(33)">Open shadow button</button>';document.querySelector('#closed').attachShadow({mode:'closed'}).innerHTML='<p class="region">Closed shadow text</p><button onclick="this.textContent+=String.fromCharCode(33)">Closed shadow button</button>';</script><iframe style="margin-top:900px;border:7px solid" src="%s/same"></iframe>`, s.URL)
 		case "/same":
-			fmt.Fprintf(w, `<h2>Same origin heading</h2><button>Same origin button</button><p class="region">Same origin region</p><iframe src="%s/cross"></iframe>`, cross)
+			fmt.Fprintf(w, `<h2>Same origin heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Same origin button</button><p class="region">Same origin region</p><iframe src="%s/cross"></iframe>`, cross)
 		case "/cross":
-			fmt.Fprintf(w, `<h2>Cross origin heading</h2><button>Cross origin button</button><p class="region">Cross origin region</p><iframe src="%s/inner"></iframe>`, s.URL)
+			fmt.Fprintf(w, `<h2>Cross origin heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Cross origin button</button><p class="region">Cross origin region</p><iframe src="%s/inner"></iframe>`, s.URL)
 		case "/inner":
-			fmt.Fprint(w, `<h2>Nested inner heading</h2><button>Nested inner button</button><p class="region">Nested inner region</p>`)
+			fmt.Fprintf(w, `<h2>Nested inner heading</h2><button onclick="this.textContent+=String.fromCharCode(33)">Nested inner button</button><input aria-label="Inner text"><button onclick="alert(String.fromCharCode(33))">Inner dialog</button><a href="%s/inner-next">Inner navigation</a><p class="region">Nested inner region</p>`, cross)
+		case "/inner-next":
+			fmt.Fprintf(w, `<h2>Inner destination</h2><p>Changed frame document</p><button onclick="this.nextElementSibling.focus()">Focus return</button><a href="%s/inner">Return inner</a>`, s.URL)
 		}
 	}))
+	s.Start()
 	t.Cleanup(s.Close)
 	return s
 }
@@ -85,6 +88,32 @@ func TestChromeReadSelectorScopesEveryDocumentAndShadow(t *testing.T) {
 		if !errors.As(err, &e) || e.Code != "invalid_input" {
 			t.Errorf("selector %q error: %v", selector, err)
 		}
+	}
+}
+
+func TestChromeReadPreservesStyledFirstLetter(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<style>.date::first-letter { text-transform:lowercase }.hidden::first-letter{visibility:hidden}</style><div class="date"><time>Woensdag, 17:57</time></div><p class="date">É</p><p class="hidden">Hidden</p>`)
+	}))
+	t.Cleanup(fixture.Close)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Sections[0].Text != "woensdag, 17:57\né\nidden" {
+		t.Fatalf("styled first letters or hidden prefix: %s", result)
+	}
+	scoped, err := p.Read(testContext(t), cdp.ReadOptions{Selector: "time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scoped.Sections[0].Text != "woensdag, 17:57" {
+		t.Fatalf("nested selector lost first letter: %s", scoped)
 	}
 }
 

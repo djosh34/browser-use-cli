@@ -32,6 +32,10 @@ func TestDiscoveryPreservesEscapedBasePath(t *testing.T) {
 		if err == nil {
 			reply(r.Context(), conn, req, map[string]any{"browserContextIds": []string{}})
 		}
+		req, err = receive(r.Context(), conn)
+		if err == nil {
+			reply(r.Context(), conn, req, map[string]any{})
+		}
 		receive(r.Context(), conn)
 	}))
 	defer s.Close()

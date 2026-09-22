@@ -98,14 +98,15 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 }
 
 type snapshotNode struct {
-	Backend    int64  `json:"backendNodeId"`
-	Type       int    `json:"nodeType"`
-	Name       string `json:"nodeName"`
-	Value      string `json:"nodeValue"`
-	Children   []int  `json:"childNodeIndexes"`
-	Document   *int   `json:"contentDocumentIndex"`
-	Layout     *int   `json:"layoutNodeIndex"`
-	Attributes []struct {
+	Backend        int64  `json:"backendNodeId"`
+	Type           int    `json:"nodeType"`
+	Name           string `json:"nodeName"`
+	Value          string `json:"nodeValue"`
+	Children       []int  `json:"childNodeIndexes"`
+	PseudoElements []int  `json:"pseudoElementIndexes"`
+	Document       *int   `json:"contentDocumentIndex"`
+	Layout         *int   `json:"layoutNodeIndex"`
+	Attributes     []struct {
 		Name  string `json:"name"`
 		Value string `json:"value"`
 	} `json:"attributes"`
@@ -129,6 +130,7 @@ func (n snapshotNode) attr(name string) string {
 }
 
 type snapshotLayout struct {
+	Node   int          `json:"domNodeIndex"`
 	Text   string       `json:"layoutText"`
 	Style  *int         `json:"styleIndex"`
 	Bounds viewportRect `json:"boundingBox"`
@@ -147,7 +149,7 @@ type domSnapshot struct {
 func (p *Page) snapshot(ctx context.Context, session string) (domSnapshot, error) {
 	var s domSnapshot
 	err := p.client.call(ctx, session, "DOMSnapshot.getSnapshot", map[string]any{
-		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "content-visibility", "overflow-x", "overflow-y"},
+		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "pointer-events", "content-visibility", "overflow-x", "overflow-y"},
 		"includeUserAgentShadowTree": false,
 	}, &s)
 	if err != nil {
@@ -200,9 +202,18 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		}
 		b.WriteByte('\n')
 	}
+	// First-letter text has its own layout record, separate from both the
+	// pseudo element's primary layout and the remaining ordinary text node.
+	firstLetters := map[int][]*snapshotLayout{}
+	for i := range s.Layouts {
+		l := &s.Layouts[i]
+		if l.Node >= 0 && l.Node < len(s.Nodes) && s.Nodes[l.Node].Name == "::first-letter" && l.Text != "" {
+			firstLetters[l.Node] = append(firstLetters[l.Node], l)
+		}
+	}
 	seen := make(map[int]bool)
-	var walk func(int, bool, clipRegion) error
-	walk = func(index int, within bool, clip clipRegion) error {
+	var walk func(int, bool, clipRegion, *string) error
+	walk = func(index int, within bool, clip clipRegion, firstLetter *string) error {
 		if index < 0 || index >= len(s.Nodes) || seen[index] {
 			return failure("protocol", "invalid snapshot node tree")
 		}
@@ -214,6 +225,30 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 			return nil
 		}
 		visible := layout != nil && !clip.excludes(layout.Bounds) && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
+		var prefix strings.Builder
+		for _, pseudo := range n.PseudoElements {
+			if pseudo < 0 || pseudo >= len(s.Nodes) {
+				return failure("protocol", "invalid snapshot pseudo element")
+			}
+			for _, fragment := range firstLetters[pseudo] {
+				if !s.suppresses(fragment) && !s.childClip(clip, layout).excludes(fragment.Bounds) && s.style(fragment, "visibility") != "hidden" && s.style(fragment, "visibility") != "collapse" {
+					prefix.WriteString(fragment.Text)
+				}
+			}
+		}
+		ownFirstLetter := prefix.String()
+		if ownFirstLetter != "" {
+			firstLetter = &ownFirstLetter
+		}
+		// Carry the prefix to the original text node, so selecting a nested
+		// inline region (such as time inside span::first-letter) stays complete.
+		if n.Type == 3 && layout != nil && strings.TrimSpace(n.Value) != "" && firstLetter != nil {
+			if within {
+				b.WriteString(*firstLetter)
+				matched = true
+			}
+			*firstLetter = ""
+		}
 		block := false
 		if visible && within {
 			matched = true
@@ -242,7 +277,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 			if n.Type == 3 {
 				b.WriteString(layout.Text)
 			}
-			if n.Name == "INPUT" && n.attr("type") != "checkbox" && n.attr("type") != "radio" {
+			if n.Name == "INPUT" && !strings.EqualFold(n.attr("type"), "checkbox") && !strings.EqualFold(n.attr("type"), "radio") {
 				b.WriteString(n.InputValue)
 			}
 			if n.Name == "TEXTAREA" {
@@ -251,7 +286,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 			}
 		}
 		for _, child := range n.Children {
-			if err := walk(child, within, s.childClip(clip, layout)); err != nil {
+			if err := walk(child, within, s.childClip(clip, layout), firstLetter); err != nil {
 				return err
 			}
 		}
@@ -260,7 +295,7 @@ func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, b
 		}
 		return nil
 	}
-	if err := walk(root, selected == nil, clipRegion{}); err != nil {
+	if err := walk(root, selected == nil, clipRegion{}, nil); err != nil {
 		return "", false, err
 	}
 	// Preserve inline text and table separators; omit empty block/list markers.
