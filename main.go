@@ -178,13 +178,25 @@ func diagnostic(w io.Writer, asJSON bool, err error, interrupted bool) int {
 			exit = 2
 		}
 	}
-	if asJSON {
-		json.NewEncoder(w).Encode(struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		}{code, message})
-	} else {
-		fmt.Fprintf(w, "%s: %s\n", code, message)
+	// Diagnostics are best-effort when a downstream pipe also blocks stderr.
+	// Do not let reporting a cancellation prevent the process from exiting.
+	written := make(chan struct{})
+	go func() {
+		if asJSON {
+			json.NewEncoder(w).Encode(struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}{code, message})
+		} else {
+			fmt.Fprintf(w, "%s: %s\n", code, message)
+		}
+		close(written)
+	}()
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-written:
+	case <-timer.C:
 	}
 	return exit
 }
@@ -228,10 +240,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if signalCtx.Err() != nil {
 		return diagnostic(stderr, o.json, signalCtx.Err(), true)
 	}
-	if o.json {
-		err = json.NewEncoder(stdout).Encode(result)
-	} else {
-		_, err = fmt.Fprintln(stdout, result.String())
+	// A downstream reader can stop without closing its pipe. Keep cancellation
+	// effective while writing captured data; this worker does no browser work.
+	written := make(chan error, 1)
+	go func() {
+		var err error
+		if o.json {
+			err = json.NewEncoder(stdout).Encode(result)
+		} else {
+			_, err = fmt.Fprintln(stdout, result.String())
+		}
+		written <- err
+	}()
+	select {
+	case err = <-written:
+	case <-ctx.Done():
+		return diagnostic(stderr, o.json, ctx.Err(), signalCtx.Err() != nil)
+	}
+	if signalCtx.Err() != nil {
+		return diagnostic(stderr, o.json, signalCtx.Err(), true)
 	}
 	if err != nil {
 		return diagnostic(stderr, o.json, &cdp.Error{Code: "output", Message: "cannot write command output"}, false)

@@ -51,7 +51,7 @@ Replace `PAGE_ID` with an ID from `pages`. Copy `CONTROL_REF` from a control's `
 
 Shared flags are `--endpoint`, `--page`, `--json` and `--timeout`. The default deadline is 30 seconds. Use a Go duration such as `--timeout 10s`. Put flags before the command or between the command and its positional arguments. Use `--` before positional arguments that start with a dash. `--help` and `--version` need no browser.
 
-Text is the default output. `--json` serializes the same captured result, without another browser read. Successful output goes to stdout. Diagnostics go to stderr, with stable `code` and `message` fields under `--json`. Exit codes are 0 for success, 2 for invalid or ambiguous input, 1 for operational failure and 130 for SIGINT.
+Text is the default output. `--json` serializes the same captured result, without another browser read. Successful output goes to stdout. Diagnostics go to stderr, with stable `code` and `message` fields under `--json`. Exit codes are 0 for success, 2 for invalid or ambiguous input, 1 for operational failure and 130 for SIGINT. Diagnostics are best-effort when stderr is blocked.
 
 `press` accepts one character, Enter, Tab, Escape, Space, arrow keys, Home, End, PageUp, PageDown, Backspace, Delete and Insert. Combine keys with Control, Alt, Meta or Shift, such as `Shift+Tab`. Ctrl and Cmd are modifier aliases. `fill` replaces supported input, textarea or contenteditable text through browser input. `select` requires a native select and an exact option value or label. Missing, ambiguous and disabled choices fail. Use click/fill/press for custom comboboxes.
 
