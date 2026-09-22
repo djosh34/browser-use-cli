@@ -9,14 +9,79 @@ import (
 // One bounded observation belongs to one serialized input operation. There is
 // no event subscription API, background waiter, or persistent action state.
 type inputObservation struct {
-	before    PagesResult
-	documents []documentCapture
-	events    chan response
-	states    []*sessionState
+	before     PagesResult
+	documents  []documentCapture
+	events     chan response
+	states     []*sessionState
+	baseline   map[string]string
+	background map[string]bool
 }
 type inputNavigation struct {
 	loader        string
 	done, stopped bool
+}
+
+type inputLifecycle struct {
+	FrameID string `json:"frameId"`
+	Loader  string `json:"loaderId"`
+	Name    string `json:"name"`
+	Frame   struct {
+		ID          string `json:"id"`
+		Loader      string `json:"loaderId"`
+		Unreachable string `json:"unreachableUrl"`
+	} `json:"frame"`
+}
+
+func decodeInputLifecycle(ev response) (inputLifecycle, error) {
+	var event inputLifecycle
+	if ev.Method == "Page.javascriptDialogOpening" {
+		return event, failure("dialog", "a native dialog prevents completion")
+	}
+	if json.Unmarshal(ev.Params, &event) != nil {
+		return event, failure("protocol", "invalid input lifecycle event")
+	}
+	if ev.Method == "Page.frameNavigated" {
+		event.FrameID = event.Frame.ID
+		event.Loader = event.Frame.Loader
+	}
+	return event, nil
+}
+
+// Events already queued before input belong to preflight/background work.
+// Keep their loader baseline through commit/load, rather than adopting a
+// pre-existing iframe request merely because it commits after the keystroke.
+func (a *inputObservation) startInput() error {
+	for {
+		select {
+		case ev := <-a.events:
+			event, err := decodeInputLifecycle(ev)
+			if err != nil {
+				return err
+			}
+			frame := event.FrameID
+			if frame == "" {
+				continue
+			}
+			if event.Loader != "" {
+				a.baseline[frame] = event.Loader
+			}
+			switch ev.Method {
+			case "Page.frameStartedLoading", "Page.frameNavigated":
+				a.background[frame] = true
+			case "Page.lifecycleEvent":
+				if event.Name == "init" {
+					a.background[frame] = true
+				}
+				if event.Name == "load" {
+					delete(a.background, frame)
+				}
+			case "Page.frameStoppedLoading":
+				delete(a.background, frame)
+			}
+		default:
+			return nil
+		}
+	}
 }
 
 func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
@@ -34,7 +99,10 @@ func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &inputObservation{before: before, documents: documents, events: make(chan response, eventLimit)}
+	a := &inputObservation{before: before, documents: documents, events: make(chan response, eventLimit), baseline: map[string]string{}, background: map[string]bool{}}
+	for _, doc := range documents {
+		a.baseline[doc.frame.ID] = doc.loader
+	}
 	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
 		p.endInput(a)
 		return nil, err
@@ -117,36 +185,30 @@ func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor 
 }
 
 func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor documentCapture) (ActionResult, error) {
-	initial := map[string]string{}
-	for _, doc := range a.documents {
-		initial[doc.frame.ID] = doc.loader
-	}
+	initial := a.baseline
 	root := a.documents[0]
 	navigations := map[string]*inputNavigation{}
 	handle := func(ev response) error {
-		if ev.Method == "Page.javascriptDialogOpening" {
-			return failure("dialog", "a native dialog prevents completion")
-		}
-		var event struct {
-			FrameID string `json:"frameId"`
-			Loader  string `json:"loaderId"`
-			Name    string `json:"name"`
-			Frame   struct {
-				ID          string `json:"id"`
-				Loader      string `json:"loaderId"`
-				Unreachable string `json:"unreachableUrl"`
-			} `json:"frame"`
-		}
-		if json.Unmarshal(ev.Params, &event) != nil {
-			return failure("protocol", "invalid input lifecycle event")
+		event, err := decodeInputLifecycle(ev)
+		if err != nil {
+			return err
 		}
 		frame := event.FrameID
-		if ev.Method == "Page.frameNavigated" {
-			frame = event.Frame.ID
-			event.Loader = event.Frame.Loader
-		}
 		if frame == "" {
 			return nil
+		}
+		if a.background[frame] {
+			if ev.Method == "Page.frameStartedLoading" {
+				delete(a.background, frame)
+			} else {
+				if event.Loader != "" {
+					initial[frame] = event.Loader
+				}
+				if ev.Method == "Page.frameStoppedLoading" || ev.Method == "Page.lifecycleEvent" && event.Name == "load" {
+					delete(a.background, frame)
+				}
+				return nil
+			}
 		}
 		nav := navigations[frame]
 		switch ev.Method {

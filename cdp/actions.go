@@ -170,6 +170,9 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 	if err != nil {
 		return ActionResult{}, err
 	}
+	if err := observation.startInput(); err != nil {
+		return ActionResult{}, err
+	}
 	if err := p.client.call(ctx, target.doc.session, "Input.dispatchMouseEvent", map[string]any{"type": "mouseMoved", "x": point.X, "y": point.Y, "button": "none"}, nil); err != nil {
 		return ActionResult{}, err
 	}

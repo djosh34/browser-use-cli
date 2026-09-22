@@ -115,6 +115,14 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
 		return ActionResult{}, err
 	}
+	// Foregrounding can resume independent iframe work. Settle it before
+	// establishing the keyboard-input boundary.
+	if err := p.settleFrame(ctx, observation.documents[0]); err != nil {
+		return ActionResult{}, err
+	}
+	if err := observation.startInput(); err != nil {
+		return ActionResult{}, err
+	}
 	modifiers := 0
 	for _, key := range keys {
 		modifiers |= key.modifier

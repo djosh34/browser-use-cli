@@ -38,6 +38,9 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if _, err := p.inputPoint(ctx, target); err != nil {
 		return ActionResult{}, err
 	}
+	if err := observation.startInput(); err != nil {
+		return ActionResult{}, err
+	}
 	var status string
 	if err := p.nodeCall(ctx, target.doc, target.object, prepareFill, nil, &status); err != nil {
 		return ActionResult{}, err

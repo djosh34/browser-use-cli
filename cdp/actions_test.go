@@ -216,6 +216,106 @@ func TestChromeInputDoesNotAwaitLaterSuggestionsOrBackgroundFetch(t *testing.T) 
 	}
 }
 
+func TestChromePressDoesNotAdoptForegroundRefresh(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(fmt.Sprintf("action_replaces_refresh=%t", replacement), func(t *testing.T) {
+			started, held, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var startOnce, heldOnce, releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/":
+					fmt.Fprint(w, `<title>Before</title><a href="about:blank" target="_blank">Background tab</a><iframe src="/frame"></iframe><script>document.onkeydown=e=>{e.preventDefault();document.title='Typed'};document.onvisibilitychange=()=>{if(!document.hidden)document.querySelector('iframe').src='/refresh'}</script>`)
+				case "/frame":
+					fmt.Fprint(w, `<p>Initial frame</p>`)
+				case "/refresh":
+					startOnce.Do(func() { close(started) })
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					fmt.Fprint(w, `<p>Background refresh</p>`)
+				case "/action":
+					fmt.Fprint(w, `<p>Action frame</p><img src="/held">`)
+				case "/held":
+					heldOnce.Do(func() { close(held) })
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+				}
+			}))
+			t.Cleanup(fixture.Close)
+			endpoint := chrome(t, "about:blank")
+			c := browserClient(t, endpoint)
+			p, err := c.Open(testContext(t), fixture.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := targetNamed(t, p, "Background tab")
+			id, err := ref.PageID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Click(testContext(t), ref); err != nil {
+				t.Fatal(err)
+			}
+			if evalValue(t, p, `String(document.hidden)`) != "true" {
+				t.Fatal("fixture did not background the original tab")
+			}
+			if replacement {
+				if _, err := p.Eval(testContext(t), `document.onkeydown=e=>{e.preventDefault();document.title='Typed';document.querySelector('iframe').src='/action'};void 0`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan error, 1)
+			go func() {
+				result, err := p.Press(testContext(t), "Enter")
+				if err == nil && result.Page.Title != "Typed" {
+					err = fmt.Errorf("wrong page: %s", result)
+				}
+				done <- err
+			}()
+			if replacement {
+				select {
+				case <-held:
+				case err := <-done:
+					t.Fatalf("action navigation returned before held load: %v", err)
+				case <-testContext(t).Done():
+					t.Fatal("action navigation did not start")
+				}
+				observer := browserClient(t, endpoint)
+				observed, err := observer.Page(testContext(t), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if evalValue(t, observed, `new Promise(resolve=>requestAnimationFrame(()=>resolve(document.querySelector('iframe').contentDocument.readyState)))`) == "complete" {
+					t.Fatal("fixture failed to hold action load")
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("new action navigation mistaken for old refresh: %v", err)
+				default:
+				}
+				releaseOnce.Do(func() { close(release) })
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("foreground refresh completion: %v", err)
+				}
+			case <-testContext(t).Done():
+				t.Fatal("foreground refresh delayed keyboard input")
+			}
+			select {
+			case <-started:
+			default:
+				t.Fatal("foreground refresh did not begin")
+			}
+		})
+	}
+}
+
 func TestChromeInputsWaitForTriggeredDocumentLoad(t *testing.T) {
 	for _, tc := range []struct{ kind, target string }{{"click", "Navigate"}, {"raf", "Frame navigation"}, {"fill", "Auto"}, {"press", "Query"}, {"select", "Route"}, {"raf-select", "Frame route"}} {
 		t.Run(tc.kind, func(t *testing.T) {
