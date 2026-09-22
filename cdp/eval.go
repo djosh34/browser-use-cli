@@ -68,7 +68,7 @@ func (p *Page) Eval(ctx context.Context, expression string) (EvalResult, error) 
 			return EvalResult{}, err
 		}
 		if copied.Exception != nil {
-			return EvalResult{}, failure("javascript", "JavaScript value could not be copied")
+			return EvalResult{}, failure("unsupported", "JavaScript value could not be copied")
 		}
 		var envelope struct {
 			Supported *bool           `json:"supported"`

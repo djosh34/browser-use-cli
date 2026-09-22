@@ -25,10 +25,10 @@ func TestChromeEvalPreservesSpecialValuesAndRejectsLossyCopies(t *testing.T) {
 			t.Errorf("special %s: %+v %v", tc.expression, result, err)
 		}
 	}
-	for _, expression := range []string{`(()=>{})`, `Symbol('x')`, `(()=>{const o={};o.self=o;return o})()`, `({f:()=>{}})`, `({x:undefined})`, `({x:NaN})`, `({x:-0})`, `({x:1n})`, `new Date()`, `document.body`} {
+	for _, expression := range []string{`(()=>{})`, `Symbol('x')`, `(()=>{const o={};o.self=o;return o})()`, `({f:()=>{}})`, `({x:undefined})`, `({x:NaN})`, `({x:-0})`, `({x:1n})`, `new Date()`, `document.body`, `({get value(){throw new Error('private-copy-error')}})`, `({nested:new Proxy({},{ownKeys(){throw new Error('private-copy-error')}})})`} {
 		_, err := p.Eval(testContext(t), expression)
 		var e *cdp.Error
-		if !errors.As(err, &e) || e.Code != "unsupported" {
+		if !errors.As(err, &e) || e.Code != "unsupported" || strings.Contains(err.Error(), "private-copy-error") {
 			t.Errorf("lossy value %s: %v", expression, err)
 		}
 	}
