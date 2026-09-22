@@ -45,7 +45,7 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if err := fillStatus(status); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.settleFrame(ctx, target.doc, true); err != nil {
+	if err := p.settleFrame(ctx, target.doc); err != nil {
 		return ActionResult{}, err
 	}
 	// Focus/selection handlers can replace, disable, cover, or redirect the field.

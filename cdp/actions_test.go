@@ -217,7 +217,7 @@ func TestChromeInputDoesNotAwaitLaterSuggestionsOrBackgroundFetch(t *testing.T) 
 }
 
 func TestChromeInputsWaitForTriggeredDocumentLoad(t *testing.T) {
-	for _, tc := range []struct{ kind, target string }{{"click", "Navigate"}, {"fill", "Auto"}, {"press", "Query"}, {"select", "Route"}} {
+	for _, tc := range []struct{ kind, target string }{{"click", "Navigate"}, {"raf", "Frame navigation"}, {"fill", "Auto"}, {"press", "Query"}, {"select", "Route"}, {"raf-select", "Frame route"}} {
 		t.Run(tc.kind, func(t *testing.T) {
 			started, release := make(chan struct{}), make(chan struct{})
 			var startOnce, releaseOnce sync.Once
@@ -225,7 +225,7 @@ func TestChromeInputsWaitForTriggeredDocumentLoad(t *testing.T) {
 			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/":
-					fmt.Fprint(w, `<title>Before</title><a href="/destination">Navigate</a><input aria-label="Auto" oninput="location.href='/destination'"><form action="/destination"><input aria-label="Query"></form><select aria-label="Route" onchange="location.href=this.value"><option value="">Stay</option><option value="/destination">Go</option></select>`)
+					fmt.Fprint(w, `<title>Before</title><a href="/destination">Navigate</a><button onclick="requestAnimationFrame(()=>location.href='/destination')">Frame navigation</button><input aria-label="Auto" oninput="location.href='/destination'"><form action="/destination"><input aria-label="Query"></form><select aria-label="Route" onchange="location.href=this.value"><option value="">Stay</option><option value="/destination">Go</option></select><select aria-label="Frame route" onchange="requestAnimationFrame(()=>location.href=this.value)"><option value="">Stay</option><option value="/destination">Go</option></select>`)
 				case "/destination":
 					fmt.Fprint(w, `<title>Loaded</title><img src="/slow">`)
 				case "/slow":
@@ -258,13 +258,13 @@ func TestChromeInputsWaitForTriggeredDocumentLoad(t *testing.T) {
 				var result cdp.ActionResult
 				var err error
 				switch tc.kind {
-				case "click":
+				case "click", "raf":
 					result, err = p.Click(testContext(t), ref)
 				case "fill":
 					result, err = p.Fill(testContext(t), ref, "place")
 				case "press":
 					result, err = p.Press(testContext(t), "Enter")
-				case "select":
+				case "select", "raf-select":
 					result, err = p.Select(testContext(t), ref, "Go")
 				}
 				if err == nil && (result.Page.Title != "Loaded" || !strings.HasPrefix(result.Page.URL, fixture.URL+"/destination")) {

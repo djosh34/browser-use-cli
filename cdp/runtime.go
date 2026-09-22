@@ -29,18 +29,19 @@ func (p *Page) isolatedWorld(ctx context.Context, doc documentCapture) (int64, e
 	return world.ID, nil
 }
 
-// Input completion crosses a task/layout turn without waiting for background
-// animation frames. Text-selection preparation also needs the next rendering
-// boundary, where Chrome delivers native select events.
-func (p *Page) settleFrame(ctx context.Context, doc documentCapture, selection bool) error {
+// Cross a rendering boundary and a task, including native selection events.
+// Hidden/offscreen documents can throttle animation frames: the private timer
+// bounds that wait, rather than waiting for background animation indefinitely.
+func (p *Page) settleFrame(ctx context.Context, doc documentCapture) error {
 	world, err := p.isolatedWorld(ctx, doc)
 	if err != nil {
 		return err
 	}
-	expression := "new Promise(resolve=>setTimeout(()=>{document.documentElement?.getBoundingClientRect();resolve(true)},0))"
-	if selection {
-		expression = "new Promise(resolve=>{const done=()=>setTimeout(()=>resolve(true),0);if(document.hidden)done();else requestAnimationFrame(done)})"
-	}
+	expression := `new Promise(resolve=>{
+ let frame=0,timer=0;
+ const done=()=>{cancelAnimationFrame(frame);clearTimeout(timer);setTimeout(()=>{document.documentElement?.getBoundingClientRect();resolve(true)},0)};
+ if(document.hidden)done();else{frame=requestAnimationFrame(done);timer=setTimeout(done,100)}
+})`
 	var result runtimeResult
 	if err := p.client.call(ctx, doc.session, "Runtime.evaluate", map[string]any{"contextId": world, "expression": expression, "awaitPromise": true, "returnByValue": true}, &result); err != nil {
 		return err

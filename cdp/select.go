@@ -41,7 +41,7 @@ func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (
 	if err := p.client.call(ctx, target.doc.session, "DOM.focus", map[string]string{"objectId": target.object}, nil); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.settleFrame(ctx, target.doc, false); err != nil {
+	if err := p.settleFrame(ctx, target.doc); err != nil {
 		return ActionResult{}, err
 	}
 	if _, err := p.inputPoint(ctx, target); err != nil {
