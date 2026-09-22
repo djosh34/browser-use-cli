@@ -23,7 +23,7 @@ func actionFixture(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, `<title>Destination</title><h1>Destination loaded</h1>`)
 			return
 		}
-		fmt.Fprint(w, `<!doctype html><title>Actions</title><button id="hit" onclick="document.title='Clicked';this.dataset.count=Number(this.dataset.count||0)+1">Hit</button><label>Text <input id="text" value="old"></label><label>Notes <textarea>old notes</textarea></label><div contenteditable aria-label="Editor">old editor</div><label>Choice <select id="choice"><option value="a">Alpha</option><option value="b">Beta</option><option value="d" disabled>Disabled</option><option value="x">Duplicate</option><option value="y">Duplicate</option></select></label><input aria-label="Readonly" readonly value="fixed"><a href="/destination">Navigate</a><a href="#same">Same document</a><a href="/popup" target="_blank">Popup</a><button onclick="alert('blocked')">Dialog</button><div style="width:20px;height:25px;overflow:clip;margin:30px 0 0 100px"><button id="clip" style="width:200px;height:25px;margin-left:-37px" onclick="document.title='Clipped click'">Clipped</button></div><div style="width:70px;margin-top:700px"><a href="#done">Several words wrapping over many lines</a></div>`)
+		fmt.Fprint(w, `<!doctype html><title>Actions</title><button id="hit" onclick="document.title='Clicked';this.dataset.count=Number(this.dataset.count||0)+1">Hit</button><label>Text <input id="text" value="old"></label><label>Notes <textarea>old notes</textarea></label><div contenteditable aria-label="Editor">old editor</div><label>Email <input type="email" value="old@example.test"></label><label>Number <input type="number" value="12"></label><label>Choice <select id="choice"><option value="a">Alpha</option><option value="b">Beta</option><option value="d" disabled>Disabled</option><option value="x">Duplicate</option><option value="y">Duplicate</option></select></label><input aria-label="Readonly" readonly value="fixed"><a href="/destination">Navigate</a><a href="#same">Same document</a><a href="/popup" target="_blank">Popup</a><button onclick="alert('blocked')">Dialog</button><div style="width:20px;height:25px;overflow:clip;margin:30px 0 0 100px"><button id="clip" style="width:200px;height:25px;margin-left:-37px" onclick="document.title='Clipped click'">Clipped</button></div><div style="width:70px;margin-top:700px"><a href="#done">Several words wrapping over many lines</a></div>`)
 	}))
 	t.Cleanup(s.Close)
 	return s
@@ -434,6 +434,9 @@ func TestChromeFillUsesNativeReplacement(t *testing.T) {
 		{"Text", "Nieuw 日本語 😀", `document.querySelector('#text').value`},
 		{"Notes", "line one\nline two", `document.querySelector('textarea').value`},
 		{"Editor", "edited body", `document.querySelector('[contenteditable]').textContent`},
+		{"Email", "new@example.test", `document.querySelector('[type=email]').value`},
+		{"Number", "42.5", `document.querySelector('[type=number]').value`},
+		{"Number", "", `document.querySelector('[type=number]').value`},
 		{"Text", "", `document.querySelector('#text').value`},
 	} {
 		if _, err := p.Fill(testContext(t), targetNamed(t, p, tc.name), tc.text); err != nil {

@@ -282,12 +282,14 @@ func TestCLIChromeCommandsAndCopiedReferences(t *testing.T) {
 	runCLI(t, binary, endpoint, 0, "press", "--json", "--page", string(page.ID), "Control+A")
 	runCLI(t, binary, endpoint, 0, "press", "--json", "Backspace")
 	runCLI(t, binary, endpoint, 0, "select", "--json", choice, "Beta")
+	runCLI(t, binary, endpoint, 0, "fill", "--json", ref("Email"), "new@example.test")
+	runCLI(t, binary, endpoint, 0, "fill", "--json", ref("Number"), "42.5")
 	var evaluated cdp.EvalResult
-	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "eval", "--json", `({text:document.querySelector('#text').value,choice:document.querySelector('select').value})`)), &evaluated); err != nil {
+	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "eval", "--json", `({text:document.querySelector('#text').value,choice:document.querySelector('select').value,email:document.querySelector('[type=email]').value,number:document.querySelector('[type=number]').value})`)), &evaluated); err != nil {
 		t.Fatal(err)
 	}
-	var values struct{ Text, Choice string }
-	if json.Unmarshal(evaluated.Value, &values) != nil || values.Text != "" || values.Choice != "b" {
+	var values struct{ Text, Choice, Email, Number string }
+	if json.Unmarshal(evaluated.Value, &values) != nil || values.Text != "" || values.Choice != "b" || values.Email != "new@example.test" || values.Number != "42.5" {
 		t.Fatalf("native key/select values: %s", evaluated)
 	}
 	if err := json.Unmarshal([]byte(runCLI(t, binary, endpoint, 0, "click", "--json", hit)), &action); err != nil || action.Page.Title != "Clicked" {
