@@ -91,6 +91,32 @@ func TestChromeReadSelectorScopesEveryDocumentAndShadow(t *testing.T) {
 	}
 }
 
+func TestChromeReadPreservesStyledFirstLetter(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<style>.date::first-letter { text-transform:lowercase }.hidden::first-letter{visibility:hidden}</style><div class="date"><time>Woensdag, 17:57</time></div><p class="date">É</p><p class="hidden">Hidden</p>`)
+	}))
+	t.Cleanup(fixture.Close)
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Sections[0].Text != "woensdag, 17:57\né\nidden" {
+		t.Fatalf("styled first letters or hidden prefix: %s", result)
+	}
+	scoped, err := p.Read(testContext(t), cdp.ReadOptions{Selector: "time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scoped.Sections[0].Text != "woensdag, 17:57" {
+		t.Fatalf("nested selector lost first letter: %s", scoped)
+	}
+}
+
 func TestChromeReadCapturesRenderedStructuredText(t *testing.T) {
 	large := strings.Repeat("Long Unicode 日本語 paragraph. ", 10000)
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
