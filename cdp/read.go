@@ -2,46 +2,106 @@ package cdp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
-// ReadOptions narrows Read to CSS selector matches. Empty selects the whole page.
-type ReadOptions struct{ Selector string }
-
-// FrameInfo identifies the source document of captured content.
-type FrameInfo struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
+// ReadOptions filters a page-wide observation without changing control numbers.
+type ReadOptions struct {
+	Selector     string
+	ControlsOnly bool
 }
 
-// ReadSection contains rendered text from one frame, in document order.
-type ReadSection struct {
-	Frame FrameInfo `json:"frame"`
-	Text  string    `json:"text"`
+// Node is native accessible content. A zero ID denotes context, not a control.
+// State retains explicit false values and native mixed/grammar/spelling tokens.
+type Node struct {
+	ID          ControlID      `json:"id,omitempty"`
+	Role        string         `json:"role"`
+	Name        string         `json:"name,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Value       *string        `json:"value,omitempty"`
+	URL         string         `json:"url,omitempty"`
+	Level       int            `json:"level,omitempty"`
+	State       map[string]any `json:"state,omitempty"`
+	Children    []*Node        `json:"children,omitempty"`
+	doc         string
+	backend     int64
 }
 
-// ReadResult is one captured observation. String does no browser I/O.
+// ReadResult is one captured value; String performs no browser I/O.
 type ReadResult struct {
-	Page     PageInfo      `json:"page"`
-	Sections []ReadSection `json:"sections"`
-	Warnings []string      `json:"warnings,omitempty"`
+	Page     PageInfo `json:"page"`
+	Complete bool     `json:"complete"`
+	Tree     *Node    `json:"tree"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (r ReadResult) String() string {
 	var b strings.Builder
-	fmt.Fprintln(&b, r.Page)
-	for _, s := range r.Sections {
-		fmt.Fprintf(&b, "\n[frame %s %s]\n%s\n", s.Frame.ID, s.Frame.URL, s.Text)
+	fmt.Fprintf(&b, "Page %d · %s · %s\n", r.Page.ID, r.Page.Title, r.Page.URL)
+	if !r.Complete {
+		b.WriteString("Warning: incomplete accessibility observation\n")
 	}
-	for _, warning := range r.Warnings {
-		fmt.Fprintf(&b, "Warning: %s\n", warning)
+	for _, w := range r.Warnings {
+		fmt.Fprintf(&b, "Warning: %s\n", w)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	var render func(*Node, string, string, string)
+	render = func(n *Node, prefix, branch, next string) {
+		if n == nil {
+			return
+		}
+		b.WriteString(prefix + branch)
+		if n.ID != 0 {
+			fmt.Fprintf(&b, "[%d] ", n.ID)
+		}
+		b.WriteString(n.Role)
+		if n.Name != "" {
+			fmt.Fprintf(&b, " %q", n.Name)
+		}
+		if n.Text != "" {
+			fmt.Fprintf(&b, " %q", n.Text)
+		}
+		if n.Value != nil {
+			fmt.Fprintf(&b, " value=%q", *n.Value)
+		}
+		if n.Level != 0 {
+			fmt.Fprintf(&b, " level=%d", n.Level)
+		}
+		keys := make([]string, 0, len(n.State))
+		for k := range n.State {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v, _ := json.Marshal(n.State[k])
+			fmt.Fprintf(&b, " %s=%s", k, v)
+		}
+		b.WriteByte('\n')
+		if n.Description != "" {
+			fmt.Fprintf(&b, "%s%sdescription: %q\n", prefix, next, n.Description)
+		}
+		if n.URL != "" {
+			fmt.Fprintf(&b, "%s%surl: %s\n", prefix, next, n.URL)
+		}
+		for i, c := range n.Children {
+			branch, indent := "├─ ", "│  "
+			if i == len(n.Children)-1 {
+				branch, indent = "└─ ", "   "
+			}
+			render(c, prefix+next, branch, indent)
+		}
+	}
+	if r.Tree != nil {
+		b.WriteByte('\n')
+		render(r.Tree, "", "", "")
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
-// Read captures all currently rendered text, including offscreen content. It
-// neither scrolls nor triggers lazy loading and does not expose password values.
+// Read captures the full native AX hierarchy, including offscreen content.
 func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	if err := p.lock(ctx); err != nil {
 		return ReadResult{}, err
@@ -54,257 +114,58 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	if err != nil {
 		return ReadResult{}, err
 	}
-	documents, warnings, err := p.documents(ctx)
+	docs, warnings, err := p.documents(ctx)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	result := ReadResult{Page: info, Sections: []ReadSection{}, Warnings: warnings}
-	matches := map[string]map[int64]bool{}
-	for _, doc := range documents {
-		var selected map[int64]bool
-		if opts.Selector != "" {
-			var ok bool
-			selected, ok = matches[doc.session]
-			if !ok {
-				selected, err = p.selectorMatches(ctx, doc, opts.Selector)
-				if err != nil {
-					return ReadResult{}, err
-				}
-				matches[doc.session] = selected
-			}
-		}
-		text, matched, err := doc.snapshot.readDocument(doc.root, selected)
-		if err != nil {
-			return ReadResult{}, err
-		}
-		if opts.Selector != "" && !matched {
-			continue
-		}
-		result.Sections = append(result.Sections, ReadSection{Frame: doc.frame, Text: text})
+	tree, _, axWarnings, err := p.captureAX(ctx, docs)
+	if err != nil {
+		return ReadResult{}, err
 	}
-	if len(result.Sections) == 0 {
-		if opts.Selector != "" {
+	warnings = append(warnings, axWarnings...)
+	if opts.Selector != "" {
+		selected := map[string]map[int64]bool{}
+		matched := false
+		for _, doc := range docs {
+			ids, ok, e := p.selectorMatches(ctx, doc, opts.Selector)
+			if e != nil {
+				return ReadResult{}, e
+			}
+			matched = matched || ok
+			selected[doc.frame.ID] = ids
+		}
+		if !matched {
 			if len(warnings) > 0 {
-				return ReadResult{}, failure("unavailable", "no selector match was captured and some frames were unavailable")
+				return ReadResult{}, failure("unavailable", "no selector match was captured and some documents were unavailable")
 			}
-			return ReadResult{}, failure("invalid_input", "selector matched no rendered region")
+			return ReadResult{}, failure("invalid_input", "selector matched no DOM region")
 		}
-		return ReadResult{}, failure("unavailable", "browser returned no readable document")
+		tree = filterAX(tree, func(n *Node) bool { return selected[n.doc][n.backend] }, true)
 	}
-	if err := p.validateDocuments(ctx, documents); err != nil {
-		return ReadResult{}, err
+	if opts.ControlsOnly {
+		tree = filterAX(tree, func(n *Node) bool { return n.ID != 0 }, false)
 	}
-	return result, nil
+	return ReadResult{Page: info, Complete: len(warnings) == 0, Tree: tree, Warnings: warnings}, nil
 }
 
-type snapshotNode struct {
-	Backend        int64  `json:"backendNodeId"`
-	Type           int    `json:"nodeType"`
-	Name           string `json:"nodeName"`
-	Value          string `json:"nodeValue"`
-	Children       []int  `json:"childNodeIndexes"`
-	PseudoElements []int  `json:"pseudoElementIndexes"`
-	Document       *int   `json:"contentDocumentIndex"`
-	Layout         *int   `json:"layoutNodeIndex"`
-	Attributes     []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	} `json:"attributes"`
-	Frame          string `json:"frameId"`
-	URL            string `json:"documentURL"`
-	BaseURL        string `json:"baseURL"`
-	InputValue     string `json:"inputValue"`
-	InputChecked   bool   `json:"inputChecked"`
-	Clickable      bool   `json:"isClickable"`
-	OptionSelected bool   `json:"optionSelected"`
-	TextValue      string `json:"textValue"`
-}
-
-func (n snapshotNode) attr(name string) string {
-	for _, a := range n.Attributes {
-		if a.Name == name {
-			return a.Value
-		}
-	}
-	return ""
-}
-
-type snapshotLayout struct {
-	Node   int          `json:"domNodeIndex"`
-	Text   string       `json:"layoutText"`
-	Style  *int         `json:"styleIndex"`
-	Bounds viewportRect `json:"boundingBox"`
-}
-type domSnapshot struct {
-	Nodes   []snapshotNode   `json:"domNodes"`
-	Layouts []snapshotLayout `json:"layoutTreeNodes"`
-	Styles  []struct {
-		Properties []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"properties"`
-	} `json:"computedStyles"`
-}
-
-func (p *Page) snapshot(ctx context.Context, session string) (domSnapshot, error) {
-	var s domSnapshot
-	err := p.client.call(ctx, session, "DOMSnapshot.getSnapshot", map[string]any{
-		"computedStyleWhitelist":     []string{"display", "visibility", "opacity", "cursor", "pointer-events", "content-visibility", "overflow-x", "overflow-y"},
-		"includeUserAgentShadowTree": false,
-	}, &s)
-	if err != nil {
-		return s, err
-	}
-	if len(s.Nodes) == 0 {
-		return s, failure("unavailable", "document changed during collection")
-	}
-	return s, nil
-}
-func (s *domSnapshot) style(l *snapshotLayout, name string) string {
-	if l == nil || l.Style == nil || *l.Style < 0 || *l.Style >= len(s.Styles) {
-		return ""
-	}
-	for _, p := range s.Styles[*l.Style].Properties {
-		if p.Name == name {
-			return p.Value
-		}
-	}
-	return ""
-}
-func (s *domSnapshot) layout(n snapshotNode) *snapshotLayout {
-	if n.Layout == nil || *n.Layout < 0 || *n.Layout >= len(s.Layouts) {
+func filterAX(n *Node, keep func(*Node) bool, subtree bool) *Node {
+	if n == nil {
 		return nil
 	}
-	return &s.Layouts[*n.Layout]
-}
-func (s *domSnapshot) suppresses(layout *snapshotLayout) bool {
-	if s.style(layout, "display") == "none" || s.style(layout, "opacity") == "0" || s.style(layout, "content-visibility") == "hidden" {
-		return true
+	own := keep(n)
+	if own && subtree {
+		return n
 	}
-	if layout == nil {
-		return false
-	}
-	clips := func(property string) bool {
-		value := s.style(layout, property)
-		return value != "" && value != "visible"
-	}
-	return (layout.Bounds.Width <= 0 && clips("overflow-x")) || (layout.Bounds.Height <= 0 && clips("overflow-y"))
-}
-
-func (s *domSnapshot) readDocument(root int, selected map[int64]bool) (string, bool, error) {
-	var b strings.Builder
-	matched := false
-	lineBreak := func() {
-		text := b.String()
-		line := strings.TrimSpace(text[strings.LastIndexByte(text, '\n')+1:])
-		if line == "*" || (line != "" && strings.Trim(line, "#") == "") {
-			return
-		}
-		b.WriteByte('\n')
-	}
-	// First-letter text has its own layout record, separate from both the
-	// pseudo element's primary layout and the remaining ordinary text node.
-	firstLetters := map[int][]*snapshotLayout{}
-	for i := range s.Layouts {
-		l := &s.Layouts[i]
-		if l.Node >= 0 && l.Node < len(s.Nodes) && s.Nodes[l.Node].Name == "::first-letter" && l.Text != "" {
-			firstLetters[l.Node] = append(firstLetters[l.Node], l)
+	var children []*Node
+	for _, c := range n.Children {
+		if kept := filterAX(c, keep, subtree); kept != nil {
+			children = append(children, kept)
 		}
 	}
-	seen := make(map[int]bool)
-	var walk func(int, bool, clipRegion, *string) error
-	walk = func(index int, within bool, clip clipRegion, firstLetter *string) error {
-		if index < 0 || index >= len(s.Nodes) || seen[index] {
-			return failure("protocol", "invalid snapshot node tree")
-		}
-		seen[index] = true
-		n := s.Nodes[index]
-		within = within || selected[n.Backend]
-		layout := s.layout(n)
-		if s.suppresses(layout) || (n.Name == "INPUT" && strings.EqualFold(n.attr("type"), "password")) {
-			return nil
-		}
-		visible := layout != nil && !clip.excludes(layout.Bounds) && s.style(layout, "visibility") != "hidden" && s.style(layout, "visibility") != "collapse"
-		var prefix strings.Builder
-		for _, pseudo := range n.PseudoElements {
-			if pseudo < 0 || pseudo >= len(s.Nodes) {
-				return failure("protocol", "invalid snapshot pseudo element")
-			}
-			for _, fragment := range firstLetters[pseudo] {
-				if !s.suppresses(fragment) && !s.childClip(clip, layout).excludes(fragment.Bounds) && s.style(fragment, "visibility") != "hidden" && s.style(fragment, "visibility") != "collapse" {
-					prefix.WriteString(fragment.Text)
-				}
-			}
-		}
-		ownFirstLetter := prefix.String()
-		if ownFirstLetter != "" {
-			firstLetter = &ownFirstLetter
-		}
-		// Carry the prefix to the original text node, so selecting a nested
-		// inline region (such as time inside span::first-letter) stays complete.
-		if n.Type == 3 && layout != nil && strings.TrimSpace(n.Value) != "" && firstLetter != nil {
-			if within {
-				b.WriteString(*firstLetter)
-				matched = true
-			}
-			*firstLetter = ""
-		}
-		block := false
-		if visible && within {
-			matched = true
-			switch n.Name {
-			case "H1", "H2", "H3", "H4", "H5", "H6":
-				fmt.Fprintf(&b, "\n%s ", strings.Repeat("#", int(n.Name[1]-'0')))
-				block = true
-			case "LI":
-				b.WriteString("\n* ")
-				block = true
-			case "P", "DIV", "SECTION", "ARTICLE", "MAIN", "HEADER", "FOOTER", "NAV", "UL", "OL", "TABLE", "TR", "BLOCKQUOTE", "PRE":
-				lineBreak()
-				block = true
-			case "BR":
-				b.WriteByte('\n')
-			case "TD", "TH":
-				b.WriteString(" | ")
-			}
-			if n.Type == 1 && !block && n.Name != "TD" && n.Name != "TH" {
-				switch s.style(layout, "display") {
-				case "block", "flex", "grid", "table-row", "list-item":
-					lineBreak()
-					block = true
-				}
-			}
-			if n.Type == 3 {
-				b.WriteString(layout.Text)
-			}
-			if n.Name == "INPUT" && !strings.EqualFold(n.attr("type"), "checkbox") && !strings.EqualFold(n.attr("type"), "radio") {
-				b.WriteString(n.InputValue)
-			}
-			if n.Name == "TEXTAREA" {
-				b.WriteString(n.TextValue)
-				return nil
-			}
-		}
-		for _, child := range n.Children {
-			if err := walk(child, within, s.childClip(clip, layout), firstLetter); err != nil {
-				return err
-			}
-		}
-		if block {
-			b.WriteByte('\n')
-		}
+	if !own && len(children) == 0 {
 		return nil
 	}
-	if err := walk(root, selected == nil, clipRegion{}, nil); err != nil {
-		return "", false, err
-	}
-	// Preserve inline text and table separators; omit empty block/list markers.
-	var lines []string
-	for _, line := range strings.Split(b.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && line != "*" && line != "|" {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n"), matched, nil
+	copy := *n
+	copy.Children = children
+	return &copy
 }
