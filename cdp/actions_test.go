@@ -101,6 +101,40 @@ func TestChromeControlOrdinalsResolveFreshlyAfterReordering(t *testing.T) {
 	}
 }
 
+func TestChromeInputSurfacesUnrelatedChildCaptureWarning(t *testing.T) {
+	for _, method := range []string{"Accessibility.getFullAXTree", "Target.attachToTarget"} {
+		t.Run(method, func(t *testing.T) {
+			fixture := observationFixture(t)
+			endpoint := chrome(t, "about:blank")
+			owner := browserClient(t, endpoint)
+			observed, err := owner.Open(testContext(t), fixture.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			c := browserClient(t, axFaultEndpoint(t, endpoint, func(current string, _ json.RawMessage) bool {
+				if current != method {
+					return false
+				}
+				calls++
+				return calls == 2
+			}))
+			p, err := c.Page(testContext(t), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := p.Click(testContext(t), 1)
+			if err != nil || result.Action != "click" || len(result.Warnings) == 0 {
+				t.Fatalf("unrelated child failure prevented input or lost warning: %+v %v", result, err)
+			}
+			read, err := observed.Read(testContext(t), cdp.ReadOptions{})
+			if err != nil || !strings.Contains(read.String(), "Root button!") {
+				t.Fatalf("available target was not clicked: %s %v", read, err)
+			}
+		})
+	}
+}
+
 func TestChromeInputDoesNotRetargetDisappearingNativeNode(t *testing.T) {
 	for _, kind := range []string{"click", "fill", "select"} {
 		t.Run(kind, func(t *testing.T) {
