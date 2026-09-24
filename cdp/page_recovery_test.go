@@ -44,7 +44,7 @@ func TestPageRecoversAfterCanceledInitialization(t *testing.T) {
 			}
 		}
 	})
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestPageRecoversAfterCanceledInitialization(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("initialization cancellation: %v", err)
 	}
-	again, err := c.Page(testContext(t), "one")
+	again, err := c.Page(testContext(t), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestPageSelectionDoesNotAccumulateDisappearedTabs(t *testing.T) {
 		}
 	})
 	for range 300 {
-		if _, err := c.Page(testContext(t), ""); err != nil {
+		if _, err := c.Page(testContext(t), 0); err != nil {
 			t.Fatalf("select sole live page: %v", err)
 		}
 	}
@@ -117,7 +117,7 @@ func TestPageCanReattachAfterExplicitNewOperation(t *testing.T) {
 			}
 		}
 	})
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

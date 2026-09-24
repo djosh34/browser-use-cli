@@ -36,7 +36,7 @@ func navigationPeer(t *testing.T, navigate func(context.Context, *websocket.Conn
 			}
 		}
 	})
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestPreviouslySelectedPageDoesNotRetargetAfterClosure(t *testing.T) {
 			}
 		}
 	})
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ import (
 
 func TestChromeEvalPreservesSpecialValuesAndRejectsLossyCopies(t *testing.T) {
 	c := browserClient(t, chrome(t, "about:blank"))
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestChromeEvalPreservesSpecialValuesAndRejectsLossyCopies(t *testing.T) {
 
 func TestChromeEvalCopiesValuesAndReportsExceptions(t *testing.T) {
 	c := browserClient(t, chrome(t, "about:blank"))
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

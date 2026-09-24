@@ -4,6 +4,7 @@ package cdp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -47,7 +48,7 @@ func chrome(t *testing.T, initial ...string) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := []string{"--headless", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"}
+		args := []string{"--headless=new", "--window-size=1440,1000", "--ozone-override-screen-size=1440,1000", "--force-device-scale-factor=1", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"}
 		if len(initial) == 0 {
 			args = append(args, "--no-startup-window")
 		} else {
@@ -128,6 +129,108 @@ func browserClient(t *testing.T, endpoint string) *cdp.Client {
 	return c
 }
 
+func TestChromePageIDsAreNumericOrdinals(t *testing.T) {
+	c := browserClient(t, chrome(t, "about:blank"))
+	pages, err := c.Pages(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Pages []struct {
+			ID int `json:"id"`
+		} `json:"pages"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil || len(got.Pages) != 1 || got.Pages[0].ID != 1 {
+		t.Fatalf("expected sole page ordinal 1: %s (%v)", data, err)
+	}
+}
+
+func TestChromePageHandlesStayBoundWhenOrdinalsChange(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Tabs</title><button onclick="window.open('/popup')">Open tab</button>`)
+	}))
+	defer fixture.Close()
+	endpoint := chrome(t, "about:blank")
+	c := browserClient(t, endpoint)
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := p.Click(testContext(t), targetNamed(t, p, "Open tab")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages, err := c.Pages(testContext(t))
+	if err != nil || len(pages.Pages) != 3 {
+		t.Fatalf("fixture tabs: %+v %v", pages, err)
+	}
+	last, err := c.Page(testContext(t), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := last.Eval(testContext(t), `document.title='Bound last tab';void 0`); err != nil {
+		t.Fatal(err)
+	}
+	original, err := p.Info(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeID := cdp.PageID(1)
+	if original.ID == closeID {
+		closeID = 2
+	}
+	first, err := c.Page(testContext(t), closeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Eval(testContext(t), `setTimeout(()=>window.close(),0);void 0`); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		pages, err = c.Pages(testContext(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pages.Pages) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fixture tab did not close")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info, err := last.Info(testContext(t))
+	if err != nil || info.ID != 2 || info.Title != "Bound last tab" {
+		t.Fatalf("handle retargeted: %+v %v", info, err)
+	}
+	if _, err := first.Info(testContext(t)); err == nil {
+		t.Fatal("closed handle retargeted a replacement ordinal")
+	}
+	c.Close()
+	c = browserClient(t, endpoint)
+	fresh, err := c.Page(testContext(t), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err = fresh.Info(testContext(t))
+	if err != nil || info.Title != "Bound last tab" {
+		t.Fatalf("fresh ordinal 2: %+v %v", info, err)
+	}
+	if _, err := c.Page(testContext(t), 3); err == nil {
+		t.Fatal("unavailable ordinal fell back")
+	}
+	var typed *cdp.Error
+	if _, err := c.Page(testContext(t), -1); !errors.As(err, &typed) || typed.Code != "invalid_input" {
+		t.Fatalf("negative page: %v", err)
+	}
+}
+
 func TestChromeOpenSelectionAndDisconnect(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "<title>Loaded 日本語</title><h1>Hello</h1>")
@@ -165,7 +268,7 @@ func TestChromeOpenSelectionAndDisconnect(t *testing.T) {
 				t.Fatalf("initial pages = %d, want %d", len(before.Pages), initial)
 			}
 			if initial != 1 {
-				if _, err := c.Page(testContext(t), ""); err == nil {
+				if _, err := c.Page(testContext(t), 0); err == nil {
 					t.Fatal("ambiguous observation succeeded")
 				}
 			}
@@ -191,7 +294,7 @@ func TestChromeOpenSelectionAndDisconnect(t *testing.T) {
 			if len(after.Pages) != want {
 				t.Fatalf("pages = %d, want %d", len(after.Pages), want)
 			}
-			if _, err := c.Page(testContext(t), "missing"); err == nil {
+			if _, err := c.Page(testContext(t), 999); err == nil {
 				t.Fatal("invalid explicit page accepted")
 			}
 			c.Close()
@@ -221,7 +324,7 @@ func TestChromeNavigationWaitsForRequestedLoad(t *testing.T) {
 	}))
 	defer fixture.Close()
 	c := browserClient(t, chrome(t, "about:blank"))
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +342,7 @@ func TestChromeNavigationWaitsForRequestedLoad(t *testing.T) {
 		t.Fatalf("returned before load: %v", err)
 	default:
 	}
-	otherHandle, err := c.Page(testContext(t), "")
+	otherHandle, err := c.Page(testContext(t), 0)
 	if err != nil {
 		close(release)
 		t.Fatal(err)
@@ -283,7 +386,7 @@ func TestChromeNavigationFailures(t *testing.T) {
 	defer fixture.Close()
 	defer close(release)
 	c := browserClient(t, chrome(t, "about:blank"))
-	p, err := c.Page(testContext(t), "")
+	p, err := c.Page(testContext(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

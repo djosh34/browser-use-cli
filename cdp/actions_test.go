@@ -28,19 +28,36 @@ func actionFixture(t *testing.T) *httptest.Server {
 	t.Cleanup(s.Close)
 	return s
 }
-func targetNamed(t *testing.T, p *cdp.Page, name string) cdp.ControlRef {
+func targetNamed(t *testing.T, p *cdp.Page, name string) cdp.ControlID {
 	t.Helper()
-	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	result, err := p.Read(testContext(t), cdp.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, control := range result.Controls {
-		if control.Name == name {
-			return control.Target
+	for _, control := range controlNodes(result.Tree) {
+		if strings.TrimSpace(control.Name) == name {
+			return control.ID
 		}
 	}
 	t.Fatalf("control %q missing: %s", name, result)
-	return ""
+	return 0
+}
+func controlNodes(root *cdp.Node) []*cdp.Node {
+	var nodes []*cdp.Node
+	var walk func(*cdp.Node)
+	walk = func(node *cdp.Node) {
+		if node == nil {
+			return
+		}
+		if node.ID != 0 {
+			nodes = append(nodes, node)
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(root)
+	return nodes
 }
 func evalValue(t *testing.T, p *cdp.Page, expression string) string {
 	t.Helper()
@@ -54,6 +71,67 @@ func evalValue(t *testing.T, p *cdp.Page, expression string) string {
 	}
 	return s
 }
+func TestChromeControlOrdinalsResolveFreshlyAfterReordering(t *testing.T) {
+	fixture := actionFixture(t)
+	endpoint := chrome(t, "about:blank")
+	c := browserClient(t, endpoint)
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := targetNamed(t, p, "Hit")
+	if id != 1 {
+		t.Fatalf("first control ID = %d", id)
+	}
+	if _, err := p.Eval(testContext(t), `document.body.insertAdjacentHTML('afterbegin','<button onclick="document.title=\'New first\'">New first</button>')`); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	c = browserClient(t, endpoint)
+	p, err = c.Page(testContext(t), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Click(testContext(t), id)
+	if err != nil || result.Page.Title != "New first" || result.Action != "click" || result.Target != 1 {
+		t.Fatalf("fresh ordinal 1 must bind new first control: %+v %v", result, err)
+	}
+	if targetNamed(t, p, "Hit") != 2 {
+		t.Fatal("controls were not renumbered")
+	}
+}
+
+func TestChromeInputDoesNotRetargetDisappearingNativeNode(t *testing.T) {
+	for _, kind := range []string{"click", "fill", "select"} {
+		t.Run(kind, func(t *testing.T) {
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, `<title>Untouched</title><button onmouseenter="replace(this)" onclick="document.title='Wrong button'">Button</button><input aria-label="Field" onfocus="replace(this)"><select aria-label="Choice" onfocus="replace(this)"><option>A</option><option>B</option></select><script>function replace(el){const replacement=el.cloneNode(true);replacement.removeAttribute('onfocus');replacement.removeAttribute('onmouseenter');el.replaceWith(replacement);if(replacement.tagName!=='BUTTON')replacement.focus()}</script>`)
+			}))
+			defer fixture.Close()
+			c := browserClient(t, chrome(t, "about:blank"))
+			p, err := c.Open(testContext(t), fixture.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "click":
+				_, err = p.Click(testContext(t), targetNamed(t, p, "Button"))
+			case "fill":
+				_, err = p.Fill(testContext(t), targetNamed(t, p, "Field"), "must not leak")
+			case "select":
+				_, err = p.Select(testContext(t), targetNamed(t, p, "Choice"), "B")
+			}
+			var typed *cdp.Error
+			if !errors.As(err, &typed) || typed.Code != "stale" {
+				t.Fatalf("disappearance must fail, not retarget: %v", err)
+			}
+			if got := evalValue(t, p, `document.title+'|'+document.querySelector('input').value+'|'+document.querySelector('select').value`); got != "Untouched||A" {
+				t.Fatalf("replacement received input: %s", got)
+			}
+		})
+	}
+}
+
 func TestChromeClickClippedAndMultirectControls(t *testing.T) {
 	fixture := actionFixture(t)
 	c := browserClient(t, chrome(t, "about:blank"))
@@ -80,18 +158,12 @@ func TestChromeInputNavigatesRemoteFrameAcrossProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := targetNamed(t, p, "Inner navigation")
-	old := targetNamed(t, p, "Nested inner button")
 	if _, err := p.Click(testContext(t), ref); err != nil {
 		t.Fatalf("frame navigation: %v", err)
 	}
 	read, err := p.Read(testContext(t), cdp.ReadOptions{})
 	if err != nil || !strings.Contains(read.String(), "Inner destination") {
 		t.Fatalf("frame destination: %s %v", read, err)
-	}
-	_, err = p.Click(testContext(t), old)
-	var typed *cdp.Error
-	if !errors.As(err, &typed) || typed.Code != "stale" {
-		t.Fatalf("old frame document ref: %v", err)
 	}
 	if _, err := p.Click(testContext(t), targetNamed(t, p, "Return inner")); err != nil {
 		t.Fatalf("navigation into new remote renderer: %v", err)
@@ -151,7 +223,7 @@ func TestChromeInputSameDocumentPopupAndDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.NewPages) != 1 || result.NewPages[0].ID == result.Page.ID {
+	if len(result.NewPages) != 1 || result.NewPages[0].ID == result.Page.ID || result.NewPages[0].URL != fixture.URL+"/popup" {
 		t.Fatalf("native popup not reported: %s", result)
 	}
 	text := result.String()
@@ -168,6 +240,36 @@ func TestChromeInputSameDocumentPopupAndDialog(t *testing.T) {
 	again, err := json.Marshal(result)
 	if err != nil || string(again) != string(data) || result.String() != text {
 		t.Fatal("captured action result changed after disconnect")
+	}
+}
+
+func TestChromeNewPagesUsesNativeIdentityNotReusedOrdinal(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<title>Popup identity</title><button onclick="window.other=window.open('/old')">Open tab</button><button onclick="other.close();window.open('/new')">Replace tab</button>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Click(testContext(t), targetNamed(t, p, "Open tab")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := c.Pages(testContext(t))
+	if err != nil || len(before.Pages) != 2 {
+		t.Fatalf("fixture pages: %+v %v", before, err)
+	}
+	result, err := p.Click(testContext(t), targetNamed(t, p, "Replace tab"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.NewPages) != 1 || result.NewPages[0].URL != fixture.URL+"/new" {
+		t.Fatalf("replacement tab lost when ordinals reused: %+v", result)
+	}
+	after, err := c.Pages(testContext(t))
+	if err != nil || len(after.Pages) != 2 {
+		t.Fatalf("fixture pages after replacement: %+v %v", after, err)
 	}
 }
 
@@ -253,13 +355,14 @@ func TestChromePressDoesNotAdoptForegroundRefresh(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := targetNamed(t, p, "Background tab")
-			id, err := ref.PageID()
-			if err != nil {
-				t.Fatal(err)
-			}
 			if _, err := p.Click(testContext(t), ref); err != nil {
 				t.Fatal(err)
 			}
+			info, err := p.Info(testContext(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := info.ID
 			if evalValue(t, p, `String(document.hidden)`) != "true" {
 				t.Fatal("fixture did not background the original tab")
 			}
@@ -344,7 +447,8 @@ func TestChromeInputsWaitForTriggeredDocumentLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 			ref := targetNamed(t, p, tc.target)
-			id, err := ref.PageID()
+			info, err := p.Info(testContext(t))
+			id := info.ID
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -414,7 +518,8 @@ func TestChromeFillAndPressInNestedRemoteFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := targetNamed(t, p, "Inner text")
-	id, err := ref.PageID()
+	info, err := p.Info(testContext(t))
+	id := info.ID
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,12 +543,12 @@ func TestChromeFillAndPressInNestedRemoteFrame(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	result, err := p.Read(testContext(t), cdp.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, control := range result.Controls {
-		if control.Name == "Inner text" && control.State.Value != nil && *control.State.Value == "z" {
+	for _, control := range controlNodes(result.Tree) {
+		if control.Name == "Inner text" && control.Value != nil && *control.Value == "z" {
 			return
 		}
 	}
@@ -624,19 +729,19 @@ func TestChromeClickTraversesNestedFramesAndShadows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	controls, err := p.Controls(testContext(t), cdp.ControlsOptions{})
+	controls, err := p.Read(testContext(t), cdp.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Close()
 	for _, name := range []string{"Nested inner button", "Cross origin button", "Same origin button", "Open shadow button", "Closed shadow button", "Root button"} {
-		var ref cdp.ControlRef
-		for _, control := range controls.Controls {
+		var ref cdp.ControlID
+		for _, control := range controlNodes(controls.Tree) {
 			if control.Name == name {
-				ref = control.Target
+				ref = control.ID
 			}
 		}
-		if ref == "" {
+		if ref == 0 {
 			t.Fatalf("missing fixture control %s", name)
 		}
 		client := browserClient(t, endpoint)
@@ -664,7 +769,8 @@ func TestChromeClickReattachesAndRejectsUnsafeTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := targetNamed(t, p, "Hit")
-	id, err := ref.PageID()
+	info, err := p.Info(testContext(t))
+	id := info.ID
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,18 +801,18 @@ func TestChromeClickReattachesAndRejectsUnsafeTargets(t *testing.T) {
 	if _, err := p.Eval(testContext(t), `document.querySelector('#overlay').remove(); const old=document.querySelector('#hit');old.replaceWith(old.cloneNode(true))`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Click(testContext(t), ref)
-	if !errors.As(err, &e) || e.Code != "stale" {
-		t.Fatalf("replacement: %v", err)
+	if _, err := p.Click(testContext(t), ref); err != nil {
+		t.Fatalf("fresh action did not resolve replacement ordinal: %v", err)
 	}
-	fresh := targetNamed(t, p, "Hit")
 	if err := p.Navigate(testContext(t), fixture.URL); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Click(testContext(t), fresh); !errors.As(err, &e) || e.Code != "stale" {
-		t.Fatalf("navigation staleness: %v", err)
+	if _, err := p.Click(testContext(t), ref); err != nil {
+		t.Fatalf("fresh action did not resolve new document ordinal: %v", err)
 	}
-	if _, err := p.Click(testContext(t), "invalid"); !errors.As(err, &e) || e.Code != "invalid_input" {
-		t.Fatalf("malformed ref: %v", err)
+	for _, invalid := range []cdp.ControlID{0, -1} {
+		if _, err := p.Click(testContext(t), invalid); !errors.As(err, &e) || e.Code != "invalid_input" {
+			t.Fatalf("invalid ordinal: %v", err)
+		}
 	}
 }
