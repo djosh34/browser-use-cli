@@ -70,7 +70,7 @@ func (p *Page) captureAX(ctx context.Context, docs []documentCapture) (*Node, ma
 			root, err = p.normalizeAX(ctx, doc, result.Nodes)
 		}
 		if err != nil {
-			if i == 0 || ctx.Err() != nil || p.client.ctx.Err() != nil {
+			if i == 0 || collectionFatal(ctx, err) || p.client.ctx.Err() != nil {
 				return nil, nil, nil, err
 			}
 			warnings = append(warnings, fmt.Sprintf("Accessibility for embedded document %s is unavailable", doc.frame.URL))
@@ -79,7 +79,7 @@ func (p *Page) captureAX(ctx context.Context, docs []documentCapture) (*Node, ma
 		// A child race is partial, whereas replacing the main document invalidates
 		// the observation. Validate each captured document before publishing it.
 		if err = p.validateDocuments(ctx, []documentCapture{doc}); err != nil {
-			if i == 0 || ctx.Err() != nil {
+			if i == 0 || collectionFatal(ctx, err) {
 				return nil, nil, nil, err
 			}
 			warnings = append(warnings, fmt.Sprintf("Embedded document %s changed during capture", doc.frame.URL))
@@ -103,8 +103,8 @@ func (p *Page) captureAX(ctx context.Context, docs []documentCapture) (*Node, ma
 			Backend int64 `json:"backendNodeId"`
 		}
 		if err := p.client.call(ctx, parent.session, "DOM.getFrameOwner", map[string]string{"frameId": doc.frame.ID}, &owner); err != nil {
-			if ctx.Err() != nil {
-				return nil, nil, nil, ctx.Err()
+			if collectionFatal(ctx, err) {
+				return nil, nil, nil, err
 			}
 			warnings = append(warnings, "An embedded document could not be placed in the accessibility tree")
 			continue
@@ -276,6 +276,10 @@ func (p *Page) normalizeAX(ctx context.Context, doc documentCapture, nodes []axN
 		if len(out.Children) == 1 {
 			child := out.Children[0]
 			if child.Role == "text" && child.ID == 0 && child.Description == "" && child.Value == nil && len(child.Children) == 0 && flatAX(child.Text) == flatAX(out.Name) && out.Name != "" {
+				// Keep the identity of mechanically folded text for explicit CSS
+				// scopes; its content is now represented by this parent's name.
+				out.scopeBackends = append(out.scopeBackends, child.backend)
+				out.scopeBackends = append(out.scopeBackends, child.scopeBackends...)
 				out.Children = nil
 			}
 		}

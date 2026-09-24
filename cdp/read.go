@@ -3,6 +3,7 @@ package cdp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,18 +18,19 @@ type ReadOptions struct {
 // Node is native accessible content. A zero ID denotes context, not a control.
 // State retains explicit false values and native mixed/grammar/spelling tokens.
 type Node struct {
-	ID          ControlID      `json:"id,omitempty"`
-	Role        string         `json:"role"`
-	Name        string         `json:"name,omitempty"`
-	Text        string         `json:"text,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Value       *string        `json:"value,omitempty"`
-	URL         string         `json:"url,omitempty"`
-	Level       int            `json:"level,omitempty"`
-	State       map[string]any `json:"state,omitempty"`
-	Children    []*Node        `json:"children,omitempty"`
-	doc         string
-	backend     int64
+	ID            ControlID      `json:"id,omitempty"`
+	Role          string         `json:"role"`
+	Name          string         `json:"name,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	Description   string         `json:"description,omitempty"`
+	Value         *string        `json:"value,omitempty"`
+	URL           string         `json:"url,omitempty"`
+	Level         int            `json:"level,omitempty"`
+	State         map[string]any `json:"state,omitempty"`
+	Children      []*Node        `json:"children,omitempty"`
+	doc           string
+	backend       int64
+	scopeBackends []int64
 }
 
 // ReadResult is one captured value; String performs no browser I/O.
@@ -126,10 +128,16 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	if opts.Selector != "" {
 		selected := map[string]map[int64]bool{}
 		matched := false
-		for _, doc := range docs {
+		for i, doc := range docs {
 			ids, ok, e := p.selectorMatches(ctx, doc, opts.Selector)
 			if e != nil {
-				return ReadResult{}, e
+				var problem *Error
+				if i == 0 || collectionFatal(ctx, e) || errors.As(e, &problem) && problem.Code == "invalid_input" {
+					return ReadResult{}, e
+				}
+				warnings = append(warnings, "An embedded document was unavailable during CSS scoping")
+				tree = withoutDocument(tree, doc.frame.ID)
+				continue
 			}
 			matched = matched || ok
 			selected[doc.frame.ID] = ids
@@ -140,12 +148,55 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 			}
 			return ReadResult{}, failure("invalid_input", "selector matched no DOM region")
 		}
-		tree = filterAX(tree, func(n *Node) bool { return selected[n.doc][n.backend] }, true)
+		tree = filterAX(tree, func(n *Node) bool {
+			if selected[n.doc][n.backend] {
+				return true
+			}
+			for _, backend := range n.scopeBackends {
+				if selected[n.doc][backend] {
+					return true
+				}
+			}
+			return false
+		}, true)
+	}
+	// Selector collection runs after AX capture. Revalidate before publishing,
+	// so a navigation cannot combine old AX with a new document's CSS matches.
+	for i, doc := range docs {
+		if err := p.validateDocuments(ctx, []documentCapture{doc}); err != nil {
+			if i == 0 || collectionFatal(ctx, err) {
+				return ReadResult{}, err
+			}
+			warnings = append(warnings, "An embedded document changed during observation")
+			tree = withoutDocument(tree, doc.frame.ID)
+		}
 	}
 	if opts.ControlsOnly {
 		tree = filterAX(tree, func(n *Node) bool { return n.ID != 0 }, false)
 	}
 	return ReadResult{Page: info, Complete: len(warnings) == 0, Tree: tree, Warnings: warnings}, nil
+}
+
+func collectionFatal(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	var e *Error
+	return errors.As(err, &e) && (e.Code == "overflow" || e.Code == "connection")
+}
+
+func withoutDocument(n *Node, doc string) *Node {
+	if n == nil || n.doc == doc {
+		return nil
+	}
+	var children []*Node
+	for _, c := range n.Children {
+		if kept := withoutDocument(c, doc); kept != nil {
+			children = append(children, kept)
+		}
+	}
+	n.Children = children
+	return n
 }
 
 func filterAX(n *Node, keep func(*Node) bool, subtree bool) *Node {

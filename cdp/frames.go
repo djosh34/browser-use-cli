@@ -67,19 +67,23 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 	}
 	// DOM is used only to locate embedded documents omitted by Page.getFrameTree
 	// (notably OOPIFs), not to discover accessible content or controls.
+	inspectedSessions := map[string]bool{}
 	for i := 0; i < len(docs); i++ {
 		doc := docs[i]
 		if i > 0 && doc.loader == "" {
 			session, e := p.frameSession(ctx, doc.frame.ID)
 			if e != nil {
-				if ctx.Err() != nil {
-					return nil, nil, ctx.Err()
+				if collectionFatal(ctx, e) {
+					return nil, nil, e
 				}
 				warnings = append(warnings, "An embedded document could not be attached")
 				continue
 			}
 			tree, e := p.frameTree(ctx, session)
 			if e != nil {
+				if collectionFatal(ctx, e) {
+					return nil, nil, e
+				}
 				warnings = append(warnings, "An embedded document could not be captured")
 				continue
 			}
@@ -93,16 +97,20 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 				}
 			}
 		}
+		if inspectedSessions[doc.session] {
+			continue
+		}
 		var result struct {
 			Root domNode `json:"root"`
 		}
 		if err := p.client.call(ctx, doc.session, "DOM.getDocument", map[string]any{"depth": -1, "pierce": true}, &result); err != nil {
-			if i == 0 || ctx.Err() != nil {
+			if i == 0 || collectionFatal(ctx, err) {
 				return nil, nil, err
 			}
 			warnings = append(warnings, fmt.Sprintf("An embedded document (%s) could not be inspected", doc.frame.URL))
 			continue
 		}
+		inspectedSessions[doc.session] = true
 		var walk func(domNode, string) error
 		walk = func(n domNode, parent string) error {
 			if n.Type == 9 && n.Frame != "" {
@@ -142,11 +150,23 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 			available = append(available, doc)
 		}
 	}
+	p.client.mu.Lock()
+	for id, state := range p.state.frames {
+		if !seen[id] || state.detached {
+			delete(p.state.frames, id)
+			delete(p.client.sessions, state.session)
+			if !state.detached {
+				state.detached = true
+				close(state.gone)
+			}
+		}
+	}
+	p.client.mu.Unlock()
 	return available, warnings, nil
 }
 
 // Recheck after selector/AX capture too, so results never silently combine
-// a snapshot from one document with semantic data from its replacement.
+// accessible content from one document with data from its replacement.
 func (p *Page) validateDocuments(ctx context.Context, documents []documentCapture) error {
 	loaders := map[string]map[string]string{}
 	for _, doc := range documents {

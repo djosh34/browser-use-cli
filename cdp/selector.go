@@ -120,6 +120,9 @@ func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selecto
 			Nodes []int64 `json:"nodeIds"`
 		}
 		if err := p.client.call(ctx, doc.session, "DOM.querySelectorAll", map[string]any{"nodeId": scope, "selector": selector}, &result); err != nil {
+			if collectionFatal(ctx, err) {
+				return nil, false, err
+			}
 			return nil, false, failure("unavailable", "document changed during selector collection")
 		}
 		for _, id := range result.Nodes {
