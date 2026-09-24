@@ -212,6 +212,58 @@ func TestAXDirectRolesVersusCollectionContexts(t *testing.T) {
 	}
 }
 
+func TestAXCollapsedSelectKeepsFiveHundredOptionsAndMachineValueSelection(t *testing.T) {
+	var html strings.Builder
+	html.WriteString(`<title>Large select</title><button>Before</button><select aria-label="Many choices">`)
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&html, `<option value="machine-%d">Visible %d</option>`, i, i)
+	}
+	html.WriteString(`</select><button>After</button>`)
+	p := axPage(t, html.String())
+	full, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := p.Read(testContext(t), cdp.ReadOptions{Selector: "select"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []cdp.ReadResult{full, scoped} {
+		options := 0
+		for _, n := range axNodes(r.Tree) {
+			if n.Role == "option" {
+				options++
+			}
+		}
+		if options != 500 {
+			t.Fatalf("native options truncated: got %d", options)
+		}
+		if n := axNamed(t, r, "Visible 499"); n.ID != 502 {
+			t.Fatalf("last option id=%d want502", n.ID)
+		}
+		if axNamed(t, r, "Many choices").ID != 2 {
+			t.Fatal("selector renumbered combobox")
+		}
+	}
+	if axNamed(t, full, "After").ID != 503 {
+		t.Fatal("option preorder was truncated")
+	}
+	if _, err := p.Select(testContext(t), 2, "machine-499"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := p.Read(testContext(t), cdp.ReadOptions{Selector: "select"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	combo := axNamed(t, selected, "Many choices")
+	if combo.Value == nil || *combo.Value != "Visible 499" {
+		t.Fatalf("native select value=%v", combo.Value)
+	}
+	if axNamed(t, selected, "Visible 499").State["selected"] != true {
+		t.Fatal("last option selection missing")
+	}
+}
+
 func TestAXLongDistinctContentIsNotTruncated(t *testing.T) {
 	content := strings.Repeat("Long Unicode 日本語 paragraph. ", 10000)
 	p := axPage(t, `<title>Long content</title><article><p>`+content+`</p><p>Tail survives.</p></article>`)
