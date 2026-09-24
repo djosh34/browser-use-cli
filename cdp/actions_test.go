@@ -3,6 +3,7 @@
 package cdp_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +133,86 @@ func TestChromeInputSurfacesUnrelatedChildCaptureWarning(t *testing.T) {
 				t.Fatalf("available target was not clicked: %s %v", read, err)
 			}
 		})
+	}
+}
+
+func TestChromeUnavailableControlReportsPartialDiscovery(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Partial lookup</title><button disabled>Available</button><iframe srcdoc="<button>Child</button>"></iframe>`)
+	}))
+	defer fixture.Close()
+	endpoint := chrome(t, "about:blank")
+	owner := browserClient(t, endpoint)
+	if _, err := owner.Open(testContext(t), fixture.URL); err != nil {
+		t.Fatal(err)
+	}
+	captures := 0
+	c := browserClient(t, axFaultEndpoint(t, endpoint, func(method string, _ json.RawMessage) bool {
+		if method != "Accessibility.getFullAXTree" {
+			return false
+		}
+		captures++
+		return captures%2 == 0
+	}))
+	p, err := c.Page(testContext(t), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil || read.Complete || len(read.Warnings) == 0 {
+		t.Fatalf("fixture did not produce partial discovery: %s %v", read, err)
+	}
+	for _, action := range []struct {
+		name string
+		call func(cdp.ControlID) (cdp.ActionResult, error)
+	}{
+		{"click", func(id cdp.ControlID) (cdp.ActionResult, error) { return p.Click(testContext(t), id) }},
+		{"fill", func(id cdp.ControlID) (cdp.ActionResult, error) { return p.Fill(testContext(t), id, "private input") }},
+		{"select", func(id cdp.ControlID) (cdp.ActionResult, error) {
+			return p.Select(testContext(t), id, "private option")
+		}},
+	} {
+		for _, target := range []struct {
+			id   cdp.ControlID
+			code string
+		}{{2, "unavailable"}, {1, "blocked"}} {
+			_, err := action.call(target.id)
+			var typed *cdp.Error
+			if !errors.As(err, &typed) || typed.Code != target.code || !strings.Contains(typed.Message, "incomplete") || !strings.Contains(typed.Message, read.Warnings[0]) || strings.Contains(typed.Message, "private") {
+				t.Errorf("%s %d discarded partial discovery warning or changed failure: %v", action.name, target.id, err)
+			}
+		}
+	}
+}
+
+func TestChromePartialInputPreservesCancellation(t *testing.T) {
+	fixture := observationFixture(t)
+	endpoint := chrome(t, "about:blank")
+	owner := browserClient(t, endpoint)
+	if _, err := owner.Open(testContext(t), fixture.URL); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	captures := 0
+	c := browserClient(t, axFaultEndpoint(t, endpoint, func(method string, _ json.RawMessage) bool {
+		if method == "Accessibility.getFullAXTree" {
+			captures++
+			return captures == 2
+		}
+		return false
+	}, func(method string) {
+		if method == "DOM.resolveNode" {
+			cancel()
+		}
+	}))
+	p, err := c.Page(testContext(t), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Click(ctx, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("partial warning replaced cancellation: %v", err)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 
 // Fill replaces text in text-like inputs, textarea, and contenteditable elements
 // with trusted browser input. It does not submit the field or await app timers.
-func (p *Page) Fill(ctx context.Context, id ControlID, text string) (ActionResult, error) {
+func (p *Page) Fill(ctx context.Context, id ControlID, text string) (_ ActionResult, err error) {
 	if !utf8.ValidString(text) {
 		return ActionResult{}, failure("invalid_input", "fill text must be valid UTF-8")
 	}
@@ -26,6 +26,7 @@ func (p *Page) Fill(ctx context.Context, id ControlID, text string) (ActionResul
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
+	defer func() { err = inputError(err, observation.warnings) }()
 	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {

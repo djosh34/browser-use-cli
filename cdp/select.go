@@ -7,7 +7,7 @@ import (
 
 // Select chooses one native select option by exact value or label. Matches
 // across both fields must be unique. Custom comboboxes use Click/Fill/Press.
-func (p *Page) Select(ctx context.Context, id ControlID, value string) (ActionResult, error) {
+func (p *Page) Select(ctx context.Context, id ControlID, value string) (_ ActionResult, err error) {
 	if !utf8.ValidString(value) {
 		return ActionResult{}, failure("invalid_input", "option value must be valid UTF-8")
 	}
@@ -26,6 +26,7 @@ func (p *Page) Select(ctx context.Context, id ControlID, value string) (ActionRe
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
+	defer func() { err = inputError(err, observation.warnings) }()
 	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 const inputFrameLimit = 256
@@ -111,8 +112,20 @@ func (a *inputObservation) startInput(ctx context.Context) error {
 	}
 }
 
-func (p *Page) beginInput(ctx context.Context, action string, id ControlID) (*inputObservation, error) {
+// Preserve the original failure code, but do not make an incomplete lookup
+// appear definitive. Context errors remain untouched, and shared errors are not
+// mutated when adding the warnings captured by this particular operation.
+func inputError(err error, warnings []string) error {
+	var typed *Error
+	if len(warnings) == 0 || !errors.As(err, &typed) {
+		return err
+	}
+	return failure(typed.Code, typed.Message+"; incomplete discovery: "+strings.Join(warnings, "; "))
+}
+
+func (p *Page) beginInput(ctx context.Context, action string, id ControlID) (_ *inputObservation, err error) {
 	documents, warnings, err := p.documents(ctx)
+	defer func() { err = inputError(err, warnings) }()
 	if err != nil {
 		return nil, err
 	}
@@ -126,10 +139,11 @@ func (p *Page) beginInput(ctx context.Context, action string, id ControlID) (*in
 	a := &inputObservation{before: before, action: action, id: id, warnings: warnings, documents: documents, events: make(chan response, eventLimit), baseline: map[string]string{}, background: map[string]bool{}}
 	if id != 0 {
 		_, targets, partial, err := p.captureAX(ctx, documents)
+		warnings = append(warnings, partial...)
+		a.warnings = warnings
 		if err != nil {
 			return nil, err
 		}
-		a.warnings = append(a.warnings, partial...)
 		var ok bool
 		a.target, ok = targets[id]
 		if !ok {

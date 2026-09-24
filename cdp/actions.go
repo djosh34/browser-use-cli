@@ -110,7 +110,7 @@ func targetStatus(status string) error {
 
 // Click resolves the current control ordinal, scrolls its native target and
 // ancestor frames, then hit-tests before one native mouse press/release pair.
-func (p *Page) Click(ctx context.Context, id ControlID) (ActionResult, error) {
+func (p *Page) Click(ctx context.Context, id ControlID) (_ ActionResult, err error) {
 	if id <= 0 {
 		return ActionResult{}, failure("invalid_input", "control ID must be positive")
 	}
@@ -126,6 +126,7 @@ func (p *Page) Click(ctx context.Context, id ControlID) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
+	defer func() { err = inputError(err, observation.warnings) }()
 	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
