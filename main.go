@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -21,17 +22,16 @@ const helpText = `Usage: browser-use-cli [flags] COMMAND [flags] [arguments]
 Commands:
   pages
   open URL
-  read [--selector CSS]
-  controls [--verbose]
-  click CONTROL_REF
-  fill CONTROL_REF TEXT
+  read [--controls-only] [--selector CSS]
+  click CONTROL_ID
+  fill CONTROL_ID TEXT
   press KEY
-  select CONTROL_REF VALUE_OR_LABEL
+  select CONTROL_ID VALUE_OR_LABEL
   eval JAVASCRIPT
 
 Shared flags:
   --endpoint URL      Browser HTTP(S) or WS(S) endpoint; overrides BROWSER_CDP_URL
-  --page PAGE_ID      Explicit tab (references already identify their tab)
+  --page PAGE_ID      Positive tab number from pages
   --json              Render captured result as JSON
   --timeout DURATION  Overall deadline (default 30s)
   --help, -h          Show this help
@@ -39,13 +39,14 @@ Shared flags:
 
 Use -- before positional arguments that begin with a dash.
 Open reuses the sole eligible tab, or creates one when there are zero or many.
-Read, controls, press, and eval require --page unless one eligible tab exists.
+Page commands require --page unless one eligible tab exists.
+Page/control numbers are freshly enumerated; changes can change their targets.
 `
 
 type options struct {
-	endpoint, page, selector     string
-	json, verbose, help, version bool
-	timeout                      time.Duration
+	endpoint, page, selector          string
+	json, controlsOnly, help, version bool
+	timeout                           time.Duration
 }
 
 func usage(message string) error { return &cdp.Error{Code: "invalid_input", Message: message} }
@@ -54,7 +55,13 @@ func flags(o *options, command string) *flag.FlagSet {
 	// Flag's default diagnostics can quote argument values or endpoint defaults.
 	f.SetOutput(io.Discard)
 	f.StringVar(&o.endpoint, "endpoint", o.endpoint, "")
-	f.StringVar(&o.page, "page", o.page, "")
+	f.Func("page", "", func(value string) error {
+		if _, err := positiveID(value); err != nil {
+			return err
+		}
+		o.page = value
+		return nil
+	})
 	f.BoolVar(&o.json, "json", o.json, "")
 	f.DurationVar(&o.timeout, "timeout", o.timeout, "")
 	f.BoolVar(&o.help, "help", o.help, "")
@@ -62,9 +69,7 @@ func flags(o *options, command string) *flag.FlagSet {
 	f.BoolVar(&o.version, "version", o.version, "")
 	if command == "read" {
 		f.StringVar(&o.selector, "selector", "", "")
-	}
-	if command == "controls" {
-		f.BoolVar(&o.verbose, "verbose", false, "")
+		f.BoolVar(&o.controlsOnly, "controls-only", false, "")
 	}
 	return f
 }
@@ -84,7 +89,7 @@ func parse(args []string) (options, string, []string, error) {
 	command := rest[0]
 	want := 0
 	switch command {
-	case "pages", "read", "controls":
+	case "pages", "read":
 	case "open", "click", "press", "eval":
 		want = 1
 	case "fill", "select":
@@ -106,21 +111,35 @@ func parse(args []string) (options, string, []string, error) {
 	if o.timeout <= 0 {
 		return o, command, nil, usage("timeout must be positive")
 	}
+	if o.page != "" {
+		if _, err := positiveID(o.page); err != nil {
+			return o, command, nil, usage("--page must be a positive integer")
+		}
+	}
 	switch command {
 	case "click", "fill", "select":
-		id, err := cdp.ControlRef(positional[0]).PageID()
-		if err != nil {
-			return o, command, nil, err
+		if _, err := positiveID(positional[0]); err != nil {
+			return o, command, nil, usage("control ID must be a positive integer")
 		}
-		if o.page != "" && cdp.PageID(o.page) != id {
-			return o, command, nil, usage("--page conflicts with the control reference")
-		}
-		o.page = string(id)
 	}
 	return o, command, positional, nil
 }
 
+func positiveID(value string) (int, error) {
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return 0, usage("ID must be a positive integer")
+		}
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return 0, usage("ID must be a positive integer")
+	}
+	return n, nil
+}
+
 func invoke(ctx context.Context, c *cdp.Client, command string, o options, args []string) (fmt.Stringer, error) {
+	pageID, _ := strconv.Atoi(o.page) // Already validated; omission selects the sole tab.
 	if command == "pages" {
 		return c.Pages(ctx)
 	}
@@ -130,7 +149,7 @@ func invoke(ctx context.Context, c *cdp.Client, command string, o options, args 
 		if o.page == "" {
 			p, err = c.Open(ctx, args[0])
 		} else {
-			p, err = c.Page(ctx, cdp.PageID(o.page))
+			p, err = c.Page(ctx, cdp.PageID(pageID))
 			if err == nil {
 				err = p.Navigate(ctx, args[0])
 			}
@@ -140,23 +159,24 @@ func invoke(ctx context.Context, c *cdp.Client, command string, o options, args 
 		}
 		return p.Info(ctx)
 	}
-	p, err := c.Page(ctx, cdp.PageID(o.page))
+	p, err := c.Page(ctx, cdp.PageID(pageID))
 	if err != nil {
 		return nil, err
 	}
 	switch command {
 	case "read":
-		return p.Read(ctx, cdp.ReadOptions{Selector: o.selector})
-	case "controls":
-		return p.Controls(ctx, cdp.ControlsOptions{Verbose: o.verbose})
+		return p.Read(ctx, cdp.ReadOptions{Selector: o.selector, ControlsOnly: o.controlsOnly})
 	case "click":
-		return p.Click(ctx, cdp.ControlRef(args[0]))
+		id, _ := positiveID(args[0])
+		return p.Click(ctx, cdp.ControlID(id))
 	case "fill":
-		return p.Fill(ctx, cdp.ControlRef(args[0]), args[1])
+		id, _ := positiveID(args[0])
+		return p.Fill(ctx, cdp.ControlID(id), args[1])
 	case "press":
 		return p.Press(ctx, args[0])
 	case "select":
-		return p.Select(ctx, cdp.ControlRef(args[0]), args[1])
+		id, _ := positiveID(args[0])
+		return p.Select(ctx, cdp.ControlID(id), args[1])
 	case "eval":
 		return p.Eval(ctx, args[0])
 	}

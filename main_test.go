@@ -12,9 +12,12 @@ import (
 )
 
 func TestCLIUsageAndMetadata(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "browser-use-cli")
-	if output, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, output)
+	binDir := t.TempDir()
+	binary := filepath.Join(binDir, "browser-use-cli")
+	install := exec.Command("go", "install", ".")
+	install.Env = append(os.Environ(), "GOBIN="+binDir)
+	if output, err := install.CombinedOutput(); err != nil {
+		t.Fatalf("install CLI: %v\n%s", err, output)
 	}
 	for _, tc := range []struct {
 		name string
@@ -27,6 +30,13 @@ func TestCLIUsageAndMetadata(t *testing.T) {
 		{"version", []string{"--version"}, 0, false},
 		{"missing command", nil, 2, false},
 		{"unknown command", []string{"unknown"}, 2, false},
+		{"removed controls", []string{"controls", "--json"}, 2, false},
+		{"removed verbose", []string{"read", "--json", "--verbose"}, 2, true},
+		{"zero page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page", "0"}, 2, true},
+		{"negative page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page=-1"}, 2, true},
+		{"non-numeric page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page", "SECRET-value"}, 2, true},
+		{"zero control", []string{"click", "--json", "0"}, 2, true},
+		{"opaque control", []string{"click", "--json", "SECRET-value"}, 2, true},
 		{"missing endpoint", []string{"--json", "pages"}, 2, true},
 		{"missing argument", []string{"fill", "--json"}, 2, true},
 		{"invalid duration", []string{"--json", "--timeout", "SECRET-value", "pages"}, 2, true},
