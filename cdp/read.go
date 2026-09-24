@@ -127,9 +127,31 @@ func (p *Page) Read(ctx context.Context, opts ReadOptions) (ReadResult, error) {
 	warnings = append(warnings, axWarnings...)
 	if opts.Selector != "" {
 		selected := map[string]map[int64]bool{}
+		exposed := map[string]map[int64]bool{}
+		var indexExposed func(*Node)
+		indexExposed = func(n *Node) {
+			if n == nil {
+				return
+			}
+			if exposed[n.doc] == nil {
+				exposed[n.doc] = map[int64]bool{}
+			}
+			if n.backend != 0 {
+				exposed[n.doc][n.backend] = true
+			}
+			for _, backend := range n.scopeBackends {
+				if backend != 0 {
+					exposed[n.doc][backend] = true
+				}
+			}
+			for _, child := range n.Children {
+				indexExposed(child)
+			}
+		}
+		indexExposed(tree)
 		matched := false
 		for i, doc := range docs {
-			ids, ok, e := p.selectorMatches(ctx, doc, opts.Selector)
+			ids, ok, e := p.selectorMatches(ctx, doc, opts.Selector, exposed[doc.frame.ID])
 			if e != nil {
 				var problem *Error
 				if i == 0 || collectionFatal(ctx, e) || errors.As(e, &problem) && problem.Code == "invalid_input" {

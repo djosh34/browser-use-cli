@@ -66,6 +66,42 @@ func TestAXFiltersKeepOrdinalsOwnershipAndEmptyMatches(t *testing.T) {
 	}
 }
 
+func TestAXSelectorMapsEachMatchToNearestExposedRoots(t *testing.T) {
+	p := axPage(t, `<title>Outgoing ownership</title><main id="scope"><button>Inside</button><button id="moved">Owned away</button></main><div role="group" aria-label="Outside owner" aria-owns="moved"></div><div id="wrapper" role="presentation"><section aria-label="First region"><button>First</button><button id="movedToo">Also owned away</button></section><section aria-label="Second region"><button>Second</button></section></div><div role="group" aria-label="Second owner" aria-owns="movedToo"></div>`)
+	full, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner := axNamed(t, full, "Outside owner"); len(owner.Children) != 1 || owner.Children[0].Name != "Owned away" {
+		t.Fatalf("fixture ownership not exposed: %s", full)
+	}
+	cases := []struct {
+		selector string
+		names    []string
+	}{
+		{"#scope", []string{"Inside"}},
+		{"#scope, #moved", []string{"Inside", "Owned away"}},
+		{"#wrapper", []string{"First", "Second"}},
+		{"#wrapper, #movedToo", []string{"First", "Second", "Also owned away"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.selector, func(t *testing.T) {
+			scoped, err := p.Read(testContext(t), cdp.ReadOptions{Selector: tc.selector})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := controlNames(scoped); !reflect.DeepEqual(got, tc.names) {
+				t.Fatalf("CSS match must retain AX subtrees of nearest exposed roots: got %v want %v\n%s", got, tc.names, scoped)
+			}
+			for _, name := range tc.names {
+				if axNamed(t, scoped, name).ID != axNamed(t, full, name).ID {
+					t.Fatalf("renumbered %s", name)
+				}
+			}
+		})
+	}
+}
+
 func TestAXSelectorMatchesSoleDeduplicatedTextRegion(t *testing.T) {
 	p := axPage(t, `<button><span class="label">Label</span></button>`)
 	r, err := p.Read(testContext(t), cdp.ReadOptions{Selector: ".label"})

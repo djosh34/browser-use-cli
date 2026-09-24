@@ -144,6 +144,37 @@ func TestAXRolesEditableRootsAndOptions(t *testing.T) {
 	}
 }
 
+func TestAXVisibilityOverrideRetainsExposedDescendants(t *testing.T) {
+	p := axPage(t, `<title>Visibility override</title><div style="visibility:hidden"><button>Hidden inherited</button><button style="visibility:visible">Visible descendant</button></div><button>Outside</button>`)
+	r, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Complete {
+		t.Fatalf("visibility capture incomplete: %s", r)
+	}
+	if got := controlNames(r); !reflect.DeepEqual(got, []string{"Visible descendant", "Outside"}) {
+		t.Fatalf("native exposed descendant lost: %s", r)
+	}
+}
+
+func TestAXNativeModalPreservesExposedDialog(t *testing.T) {
+	p := axPage(t, `<title>Native dialog</title><button>Background</button><dialog><p>Modal content</p><button>Inside dialog</button></dialog><script>document.querySelector('dialog').showModal()</script>`)
+	r, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Complete {
+		t.Fatalf("modal incomplete: %s", r)
+	}
+	if got := controlNames(r); !reflect.DeepEqual(got, []string{"Inside dialog"}) {
+		t.Fatalf("native exposed modal content lost: %s", r)
+	}
+	if !strings.Contains(r.String(), "Modal content") {
+		t.Fatalf("dialog text missing: %s", r)
+	}
+}
+
 func TestAXDirectRolesVersusCollectionContexts(t *testing.T) {
 	p := axPage(t, `<title>Role matrix</title><div role="button" aria-label="Button"></div><a href="#">Link</a><div role="checkbox" aria-label="Checkbox" aria-checked="mixed"></div><div role="radio" aria-label="Radio" aria-checked="false"></div><div role="textbox" aria-label="Textbox"></div><div role="searchbox" aria-label="Search"></div><div role="combobox" aria-label="Combo" aria-expanded="false"></div><div role="listbox" aria-label="Listbox"><div role="option" aria-label="Option" aria-selected="false"></div></div><div role="menu"><div role="menuitem" aria-label="Menuitem"></div><div role="menuitemcheckbox" aria-label="Menucheck" aria-checked="mixed"></div><div role="menuitemradio" aria-label="Menuradio" aria-checked="false"></div></div><div role="slider" aria-label="Slider" aria-valuenow="4"></div><div role="spinbutton" aria-label="Spin" aria-valuenow="2"></div><div role="scrollbar" aria-label="Scroll" aria-valuenow="10" aria-controls="content"></div><div role="switch" aria-label="Switch" aria-checked="false"></div><div role="tablist" aria-label="Tablist"><div role="tab" aria-label="Tab" aria-selected="false"></div></div><div role="tree" aria-label="Tree"><div role="treeitem" aria-label="Treeitem"></div></div><div role="menubar" aria-label="Menubar"></div><div role="radiogroup" aria-label="Radiogroup"></div><div role="tabpanel" aria-label="Panel"></div><input type="datetime-local" aria-label="Datetime"><button disabled aria-label="Disabled"></button><button></button>`)
 	r, err := p.Read(testContext(t), cdp.ReadOptions{})

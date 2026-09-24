@@ -3,10 +3,41 @@
 package cdp_test
 
 import (
+	"fmt"
 	"github.com/djosh34/browser-use-cli/cdp"
 	"strings"
 	"testing"
 )
+
+func TestAXSelectorFindsSameProcessDocumentInsideAuthorShadow(t *testing.T) {
+	for _, mode := range []string{"open", "closed"} {
+		t.Run(mode, func(t *testing.T) {
+			p := axPage(t, fmt.Sprintf(`<title>Shadow frame</title><button>Outside</button><div id="host"></div><script>const root=document.querySelector('#host').attachShadow({mode:%q});const frame=document.createElement('iframe');frame.srcdoc='<main class="region"><button>Child button</button></main>';root.append(frame)</script>`, mode))
+			full, err := p.Read(testContext(t), cdp.ReadOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !full.Complete {
+				t.Fatalf("full capture incomplete: %s", full)
+			}
+			child := axNamed(t, full, "Child button")
+			scoped, err := p.Read(testContext(t), cdp.ReadOptions{Selector: ".region"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !scoped.Complete {
+				t.Fatalf("shadow child CSS capture incomplete: %s", scoped)
+			}
+			names := controlNames(scoped)
+			if len(names) != 1 || names[0] != "Child button" {
+				t.Fatalf("scope: %s", scoped)
+			}
+			if axNamed(t, scoped, "Child button").ID != child.ID {
+				t.Fatal("filtered child was renumbered")
+			}
+		})
+	}
+}
 
 func TestAXHiddenEmbeddingsDoNotResurrectChildDocuments(t *testing.T) {
 	p := axPage(t, `<title>Hidden frames</title><button>Visible</button><iframe hidden srcdoc="<button>Hidden child</button>"></iframe><iframe aria-hidden="true" srcdoc="<button>ARIA hidden child</button>"></iframe><div inert><iframe srcdoc="<button>Inert child</button>"></iframe></div>`)

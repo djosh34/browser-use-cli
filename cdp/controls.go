@@ -189,7 +189,10 @@ func (p *Page) normalizeAX(ctx context.Context, doc documentCapture, nodes []axN
 		if n.Ignored {
 			for _, r := range n.Reasons {
 				switch r.Name {
-				case "ariaHiddenElement", "ariaHiddenSubtree", "inertElement", "inertSubtree", "notRendered", "notVisible", "inactiveCarouselTabContent", "inactiveModalDialog", "activeModalDialog", "activeFullscreenElement":
+				// Explicit accessibility-hidden/inert subtrees are exclusion
+				// boundaries. Other ignored reasons describe this wrapper,
+				// not necessarily its descendants (e.g. an active modal).
+				case "ariaHiddenElement", "ariaHiddenSubtree", "inertElement", "inertSubtree":
 					return nil, nil
 				}
 			}

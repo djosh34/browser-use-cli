@@ -16,9 +16,10 @@ type domNode struct {
 	Document   *domNode  `json:"contentDocument"`
 }
 
-// CSS is the only DOM scoping operation. Descendant identities select exposed
-// AX roots; their AX (not DOM) descendants are then retained, including aria-owns.
-func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selector string) (map[int64]bool, bool, error) {
+// CSS is the only DOM scoping operation. Each match maps to its nearest exposed
+// AX roots. Stop DOM descent there: only their AX subtrees belong to the region,
+// not DOM descendants that accessibility ownership moved elsewhere.
+func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selector string, exposed map[int64]bool) (map[int64]bool, bool, error) {
 	world, err := p.isolatedWorld(ctx, doc)
 	if err != nil {
 		return nil, false, err
@@ -67,6 +68,14 @@ func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selecto
 					return found
 				}
 			}
+			for i := range n.Shadows {
+				if n.Shadows[i].ShadowType == "user-agent" {
+					continue
+				}
+				if found := find(&n.Shadows[i]); found != nil {
+					return found
+				}
+			}
 			return nil
 		}
 		if found := find(root); found != nil {
@@ -107,7 +116,10 @@ func (p *Page) selectorMatches(ctx context.Context, doc documentCapture, selecto
 		if n.ShadowType == "user-agent" {
 			return
 		}
-		backends[n.Backend] = true
+		if exposed[n.Backend] {
+			backends[n.Backend] = true
+			return
+		}
 		for i := range n.Children {
 			descend(&n.Children[i])
 		}
