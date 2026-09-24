@@ -46,7 +46,7 @@ type Client struct {
 	next     int64
 	pending  map[int64]pendingCall
 	err      error
-	pages    map[PageID]*pageState
+	pages    map[string]*pageState
 	sessions map[string]*sessionState
 	openGate chan struct{}
 }
@@ -72,7 +72,7 @@ func Connect(ctx context.Context, endpoint string) (*Client, error) {
 	}
 	conn.SetReadLimit(messageLimit + 1)
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[PageID]*pageState), sessions: make(map[string]*sessionState), openGate: make(chan struct{}, 1)}
+	c := &Client{conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), pending: make(map[int64]pendingCall), pages: make(map[string]*pageState), sessions: make(map[string]*sessionState), openGate: make(chan struct{}, 1)}
 	go c.read()
 	// This browser-only command also rejects page-level connections behind proxies.
 	var contexts struct {
@@ -248,7 +248,7 @@ func (c *Client) call(ctx context.Context, session, method string, params, out a
 }
 
 type targetInfo struct {
-	ID    PageID `json:"targetId"`
+	ID    string `json:"targetId"`
 	Type  string `json:"type"`
 	URL   string `json:"url"`
 	Title string `json:"title"`
@@ -265,10 +265,24 @@ func (t targetInfo) eligible() bool {
 	}
 	return true
 }
-func (t targetInfo) info() PageInfo { return PageInfo{t.ID, t.URL, t.Title} }
+func (t targetInfo) info(id PageID) PageInfo { return PageInfo{id, t.URL, t.Title} }
 
 // Pages lists ordinary page targets, excluding browser-internal tabs.
 func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
+	targets, err := c.pageTargets(ctx)
+	if err != nil {
+		return PagesResult{}, err
+	}
+	result := PagesResult{Pages: make([]PageInfo, len(targets))}
+	for i, target := range targets {
+		result.Pages[i] = target.info(PageID(i + 1))
+	}
+	return result, nil
+}
+
+// Only native identities persist in session state. Public ordinals are derived
+// from this fresh snapshot and are never used as registry keys.
+func (c *Client) pageTargets(ctx context.Context) ([]targetInfo, error) {
 	c.mu.Lock()
 	known := maps.Clone(c.pages)
 	c.mu.Unlock()
@@ -276,19 +290,19 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 		Targets []targetInfo `json:"targetInfos"`
 	}
 	if err := c.call(ctx, "", "Target.getTargets", nil, &result); err != nil {
-		return PagesResult{}, err
+		return nil, err
 	}
 	if result.Targets == nil {
-		return PagesResult{}, failure("protocol", "browser result has no page list")
+		return nil, failure("protocol", "browser result has no page list")
 	}
-	pages := PagesResult{Pages: []PageInfo{}}
+	pages := []targetInfo{}
 	for _, t := range result.Targets {
 		if t.ID == "" {
-			return PagesResult{}, failure("protocol", "browser returned an empty target identity")
+			return nil, failure("protocol", "browser returned an empty target identity")
 		}
 		delete(known, t.ID)
 		if t.eligible() {
-			pages.Pages = append(pages.Pages, t.info())
+			pages = append(pages, t)
 		}
 	}
 	// Retire only handles that existed before this snapshot request. A
@@ -314,6 +328,6 @@ func (c *Client) Pages(ctx context.Context) (PagesResult, error) {
 		}
 	}
 	c.mu.Unlock()
-	sort.Slice(pages.Pages, func(i, j int) bool { return pages.Pages[i].ID < pages.Pages[j].ID })
+	sort.Slice(pages, func(i, j int) bool { return pages[i].ID < pages[j].ID })
 	return pages, nil
 }

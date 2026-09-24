@@ -107,7 +107,7 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	observation, err := p.beginInput(ctx)
+	observation, err := p.beginInput(ctx, "press", 0)
 	if err != nil {
 		return ActionResult{}, err
 	}

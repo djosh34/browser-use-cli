@@ -20,19 +20,24 @@ type Error struct {
 func (e *Error) Error() string           { return e.Code + ": " + e.Message }
 func failure(code, message string) error { return &Error{Code: code, Message: message} }
 
-// PageID identifies a browser tab, not a position in the tab list.
-type PageID string
+// PageID is a current eligible-tab ordinal, starting at 1. Zero selects the
+// sole eligible tab. Ordinals are enumerated afresh, never remembered.
+type PageID int
 
-// PageInfo is a captured tab identity and its current metadata.
+// ControlID is a page-wide accessibility-tree preorder ordinal, starting at 1.
+// Each input operation resolves it afresh, then binds to that native node.
+type ControlID int
+
+// PageInfo captures a tab's current ordinal and metadata.
 type PageInfo struct {
 	ID    PageID `json:"id"`
 	URL   string `json:"url"`
 	Title string `json:"title"`
 }
 
-func (p PageInfo) String() string { return fmt.Sprintf("%s\t%s\t%s", p.ID, p.Title, p.URL) }
+func (p PageInfo) String() string { return fmt.Sprintf("%d\t%s\t%s", p.ID, p.Title, p.URL) }
 
-// PagesResult contains the eligible tabs, ordered by ID.
+// PagesResult contains eligible tabs in native-target order, numbered from 1.
 type PagesResult struct {
 	Pages []PageInfo `json:"pages"`
 }

@@ -12,7 +12,11 @@ const inputEventLimit = 4096
 // One bounded observation belongs to one serialized input operation. There is
 // no event subscription API, background waiter, or persistent action state.
 type inputObservation struct {
-	before     PagesResult
+	before     []targetInfo
+	action     string
+	id         ControlID
+	target     controlTarget
+	warnings   []string
 	documents  []documentCapture
 	events     chan response
 	states     []*sessionState
@@ -107,22 +111,31 @@ func (a *inputObservation) startInput(ctx context.Context) error {
 	}
 }
 
-func (p *Page) beginInput(ctx context.Context) (*inputObservation, error) {
+func (p *Page) beginInput(ctx context.Context, action string, id ControlID) (*inputObservation, error) {
 	documents, warnings, err := p.documents(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if len(warnings) != 0 {
-		return nil, failure("unavailable", "cannot observe every frame before input")
-	}
 	if len(documents) == 0 {
 		return nil, failure("unavailable", "page has no available document")
 	}
-	before, err := p.client.Pages(ctx)
+	before, err := p.client.pageTargets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	a := &inputObservation{before: before, documents: documents, events: make(chan response, eventLimit), baseline: map[string]string{}, background: map[string]bool{}}
+	a := &inputObservation{before: before, action: action, id: id, warnings: warnings, documents: documents, events: make(chan response, eventLimit), baseline: map[string]string{}, background: map[string]bool{}}
+	if id != 0 {
+		_, targets, partial, err := p.captureAX(ctx, documents)
+		if err != nil {
+			return nil, err
+		}
+		a.warnings = append(a.warnings, partial...)
+		var ok bool
+		a.target, ok = targets[id]
+		if !ok {
+			return nil, failure("unavailable", "control ordinal is unavailable in the current accessibility tree")
+		}
+	}
 	for _, doc := range documents {
 		if err := a.rememberFrame(doc.frame.ID); err != nil {
 			return nil, err
@@ -193,9 +206,7 @@ func (p *Page) settleInputFrame(ctx context.Context, a *inputObservation, actor 
 	if err != nil {
 		return err
 	}
-	if len(warnings) != 0 {
-		return failure("unavailable", "input frame changed while verifying completion")
-	}
+	a.warnings = append(a.warnings, warnings...)
 	if err := p.observeInputDocuments(ctx, a, documents); err != nil {
 		return err
 	}
@@ -327,7 +338,7 @@ func (p *Page) completeInput(ctx context.Context, a *inputObservation, actor doc
 		}
 		if !waiting {
 			if settleErr == nil {
-				return p.actionResult(ctx, a.before)
+				return p.actionResult(ctx, a)
 			}
 			failedSettles++
 			if len(navigations) == 0 || failedSettles >= 2 {
