@@ -29,7 +29,7 @@ func TestNavigationObservesLoadBeforeCommandReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := p.Info(testContext(t))
-	if err != nil || info.ID != "one" {
+	if err != nil || info.ID != 1 {
 		t.Fatalf("info: %+v %v", info, err)
 	}
 }

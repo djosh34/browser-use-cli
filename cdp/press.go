@@ -95,7 +95,7 @@ func parseKey(input string) ([]keyStroke, error) {
 
 // Press sends one key (for example Enter or ArrowDown) or modifier combination
 // (for example Control+A or Shift+Tab) to the tab's focused element.
-func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
+func (p *Page) Press(ctx context.Context, key string) (_ ActionResult, err error) {
 	keys, err := parseKey(key)
 	if err != nil {
 		return ActionResult{}, err
@@ -107,11 +107,12 @@ func (p *Page) Press(ctx context.Context, key string) (ActionResult, error) {
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	observation, err := p.beginInput(ctx)
+	observation, err := p.beginInput(ctx, "press", 0)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
+	defer func() { err = inputError(err, observation.warnings) }()
 	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
 		return ActionResult{}, err
 	}

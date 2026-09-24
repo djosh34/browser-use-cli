@@ -5,22 +5,20 @@ import (
 	"fmt"
 )
 
+type frameInfo struct{ ID, URL string }
 type frameTree struct {
 	Frame struct {
 		ID     string `json:"id"`
 		Parent string `json:"parentId"`
 		Loader string `json:"loaderId"`
+		URL    string `json:"url"`
 	} `json:"frame"`
 	Children []frameTree `json:"childFrames"`
 }
 type documentCapture struct {
-	frame       FrameInfo
-	parent      string
-	loader      string
-	session     string
-	snapshot    *domSnapshot
-	root        int
-	ownerBounds *viewportRect
+	frame                   frameInfo
+	parent, loader, session string
+	backend                 int64
 }
 
 func (p *Page) frameTree(ctx context.Context, session string) (frameTree, error) {
@@ -34,177 +32,127 @@ func (p *Page) frameTree(ctx context.Context, session string) (frameTree, error)
 	return result.Tree, err
 }
 
-// documents walks only frames belonging to this tab. Same-process documents
-// share a snapshot; out-of-process frames need their own flattened CDP session.
+// Documents carry native binding identities, never a layout-derived observation.
 func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, error) {
 	root, err := p.frameTree(ctx, p.state.session)
 	if err != nil {
 		return nil, nil, err
 	}
-	known := map[string]frameTree{}
-	order := []string{}
-	var addTree func(frameTree, string)
-	addTree = func(tree frameTree, parent string) {
-		if tree.Frame.Parent == "" {
-			tree.Frame.Parent = parent
+	var docs []documentCapture
+	var warnings []string
+	seen := map[string]bool{}
+	var collect func(frameTree, string, string) error
+	collect = func(tree frameTree, session, parent string) error {
+		id := tree.Frame.ID
+		if seen[id] {
+			return nil
 		}
-		if _, ok := known[tree.Frame.ID]; !ok {
-			order = append(order, tree.Frame.ID)
+		seen[id] = true
+		if len(seen) > sessionLimit {
+			return failure("overflow", "too many documents in this page")
 		}
-		known[tree.Frame.ID] = tree
+		if tree.Frame.Parent != "" {
+			parent = tree.Frame.Parent
+		}
+		docs = append(docs, documentCapture{frame: frameInfo{id, tree.Frame.URL}, parent: parent, loader: tree.Frame.Loader, session: session})
 		for _, child := range tree.Children {
-			addTree(child, tree.Frame.ID)
+			if err := collect(child, session, id); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	addTree(root, "")
-	captures := map[string]documentCapture{}
-	hidden := map[string]bool{}
-	ownerBounds := map[string]*viewportRect{}
-	warnings := []string{}
-	for index := 0; index < len(order); index++ {
-		id := order[index]
-		if hidden[id] {
-			continue
-		}
-		if _, ok := captures[id]; ok {
-			continue
-		}
-		session := p.state.session
-		if index > 0 {
-			session, err = p.frameSession(ctx, id)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, nil, ctx.Err()
+	if err := collect(root, p.state.session, ""); err != nil {
+		return nil, nil, err
+	}
+	// DOM is used only to locate embedded documents omitted by Page.getFrameTree
+	// (notably OOPIFs), not to discover accessible content or controls.
+	inspectedSessions := map[string]bool{}
+	for i := 0; i < len(docs); i++ {
+		doc := docs[i]
+		if i > 0 && doc.loader == "" {
+			session, e := p.frameSession(ctx, doc.frame.ID)
+			if e != nil {
+				if collectionFatal(ctx, e) {
+					return nil, nil, e
 				}
-				if p.client.ctx.Err() != nil {
-					return nil, nil, p.client.connectionError()
-				}
-				warnings = append(warnings, fmt.Sprintf("frame %s is unavailable", id))
+				warnings = append(warnings, "An embedded document could not be attached")
 				continue
 			}
-			tree, err := p.frameTree(ctx, session)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("frame %s changed during collection", id))
+			tree, e := p.frameTree(ctx, session)
+			if e != nil {
+				if collectionFatal(ctx, e) {
+					return nil, nil, e
+				}
+				warnings = append(warnings, "An embedded document could not be captured")
 				continue
 			}
-			addTree(tree, known[id].Frame.Parent)
+			docs[i].session = session
+			docs[i].loader = tree.Frame.Loader
+			docs[i].frame.URL = tree.Frame.URL
+			doc = docs[i]
+			for _, child := range tree.Children {
+				if err := collect(child, session, doc.frame.ID); err != nil {
+					return nil, nil, err
+				}
+			}
 		}
-		snapshot, err := p.snapshot(ctx, session)
-		if err != nil {
-			if index == 0 || ctx.Err() != nil {
+		if inspectedSessions[doc.session] {
+			continue
+		}
+		var result struct {
+			Root domNode `json:"root"`
+		}
+		if err := p.client.call(ctx, doc.session, "DOM.getDocument", map[string]any{"depth": -1, "pierce": true}, &result); err != nil {
+			if i == 0 || collectionFatal(ctx, err) {
 				return nil, nil, err
 			}
-			warnings = append(warnings, fmt.Sprintf("frame %s could not be captured", id))
+			warnings = append(warnings, fmt.Sprintf("An embedded document (%s) could not be inspected", doc.frame.URL))
 			continue
 		}
-		// Chrome's frame tree and snapshot omit remote documents. Resolve
-		// their owner elements to find the embedded frame identity, rather
-		// than guessing from URLs or attaching unrelated browser targets.
-		for rootIndex, node := range snapshot.Nodes {
-			if node.Type != 9 || hidden[node.Frame] {
-				continue
+		inspectedSessions[doc.session] = true
+		var walk func(domNode, string) error
+		walk = func(n domNode, parent string) error {
+			if n.Type == 9 && n.Frame != "" {
+				parent = n.Frame
 			}
-			var owners func(int, bool, clipRegion) error
-			owners = func(i int, suppressed bool, clip clipRegion) error {
-				if i < 0 || i >= len(snapshot.Nodes) {
-					return failure("protocol", "invalid frame owner tree")
+			if n.Frame != "" && n.Type == 1 && !seen[n.Frame] {
+				seen[n.Frame] = true
+				if len(seen) > sessionLimit {
+					return failure("overflow", "too many documents in this page")
 				}
-				n := snapshot.Nodes[i]
-				layout := snapshot.layout(n)
-				suppressed = suppressed || snapshot.suppresses(layout)
-				if n.Name == "IFRAME" || n.Name == "FRAME" {
-					frameID := n.Frame
-					if frameID == "" {
-						var described struct {
-							Node struct {
-								Frame string `json:"frameId"`
-							} `json:"node"`
-						}
-						if err := p.client.call(ctx, session, "DOM.describeNode", map[string]any{"backendNodeId": n.Backend}, &described); err != nil {
-							return err
-						}
-						frameID = described.Node.Frame
-					}
-					if frameID == "" {
-						if !suppressed && layout != nil {
-							warnings = append(warnings, fmt.Sprintf("an embedded frame in %s is unavailable", node.Frame))
-						}
-						return nil
-					}
-					if _, ok := known[frameID]; !ok {
-						var remote frameTree
-						remote.Frame.ID = frameID
-						addTree(remote, node.Frame)
-					}
-					hidden[frameID] = suppressed || layout == nil || layout.Bounds.Width <= 0 || layout.Bounds.Height <= 0 || clip.excludes(layout.Bounds) || snapshot.style(layout, "visibility") == "hidden" || snapshot.style(layout, "visibility") == "collapse"
-					if layout != nil {
-						bounds := layout.Bounds
-						ownerBounds[frameID] = &bounds
-					}
-				}
-				for _, child := range n.Children {
-					if err := owners(child, suppressed, snapshot.childClip(clip, layout)); err != nil {
-						return err
-					}
-				}
-				return nil
+				docs = append(docs, documentCapture{frame: frameInfo{ID: n.Frame}, parent: parent})
 			}
-			if err := owners(rootIndex, false, clipRegion{}); err != nil {
-				return nil, nil, err
+			for _, c := range n.Children {
+				if err := walk(c, parent); err != nil {
+					return err
+				}
 			}
+			for _, c := range n.Shadows {
+				if err := walk(c, parent); err != nil {
+					return err
+				}
+			}
+			if n.Document != nil {
+				if err := walk(*n.Document, n.Frame); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-		after, err := p.frameTree(ctx, session)
-		if err != nil {
+		if err := walk(result.Root, doc.frame.ID); err != nil {
 			return nil, nil, err
 		}
-		stable := map[string]string{}
-		var loaders func(frameTree)
-		loaders = func(tree frameTree) {
-			stable[tree.Frame.ID] = tree.Frame.Loader
-			for _, child := range tree.Children {
-				loaders(child)
-			}
-		}
-		loaders(after)
-		for i, node := range snapshot.Nodes {
-			if node.Type != 9 {
-				continue
-			}
-			frame, ok := known[node.Frame]
-			if !ok || stable[node.Frame] != frame.Frame.Loader {
-				if node.Frame == root.Frame.ID {
-					return nil, nil, failure("unavailable", "main document changed during collection")
-				}
-				warnings = append(warnings, fmt.Sprintf("frame %s changed during collection", node.Frame))
-				continue
-			}
-			captures[node.Frame] = documentCapture{FrameInfo{node.Frame, node.URL}, frame.Frame.Parent, frame.Frame.Loader, session, &snapshot, i, ownerBounds[node.Frame]}
+	}
+	available := docs[:0]
+	for _, doc := range docs {
+		if doc.session != "" {
+			available = append(available, doc)
 		}
 	}
-	result := make([]documentCapture, 0, len(captures))
-	// Follow parentage in discovery order so a remote descendant precedes
-	// its parent's next sibling, irrespective of which session captured it.
-	visited := map[string]bool{}
-	var appendDocument func(string)
-	appendDocument = func(id string) {
-		if visited[id] || hidden[id] {
-			return
-		}
-		visited[id] = true
-		if doc, ok := captures[id]; ok {
-			result = append(result, doc)
-		}
-		for _, child := range order {
-			if known[child].Frame.Parent == id {
-				appendDocument(child)
-			}
-		}
-	}
-	appendDocument(root.Frame.ID)
 	p.client.mu.Lock()
 	for id, state := range p.state.frames {
-		_, exists := known[id]
-		if !exists || state.detached {
+		if !seen[id] || state.detached {
 			delete(p.state.frames, id)
 			delete(p.client.sessions, state.session)
 			if !state.detached {
@@ -214,11 +162,11 @@ func (p *Page) documents(ctx context.Context) ([]documentCapture, []string, erro
 		}
 	}
 	p.client.mu.Unlock()
-	return result, warnings, nil
+	return available, warnings, nil
 }
 
 // Recheck after selector/AX capture too, so results never silently combine
-// a snapshot from one document with semantic data from its replacement.
+// accessible content from one document with data from its replacement.
 func (p *Page) validateDocuments(ctx context.Context, documents []documentCapture) error {
 	loaders := map[string]map[string]string{}
 	for _, doc := range documents {

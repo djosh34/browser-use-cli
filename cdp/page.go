@@ -31,31 +31,33 @@ type sessionState struct {
 // share a lock and session. Closing the Client invalidates all of its Pages.
 type Page struct {
 	client *Client
-	id     PageID
+	id     string // Native tab identity, bound once when the handle is created.
 	state  *pageState
 }
 
-// Page selects an explicit eligible tab, or the sole eligible tab for an empty
-// ID. An absent explicit ID never falls back to another page.
+// Page resolves a current eligible-tab ordinal, or the sole eligible tab for
+// zero. The returned handle stays bound to that native tab even if ordinals change.
+// Negative IDs are invalid; an unavailable explicit ID never falls back.
 func (c *Client) Page(ctx context.Context, id PageID) (*Page, error) {
-	pages, err := c.Pages(ctx)
+	if id < 0 {
+		return nil, failure("invalid_input", "page ID must not be negative")
+	}
+	pages, err := c.pageTargets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if id == "" {
-		if len(pages.Pages) != 1 {
+	if id == 0 {
+		if len(pages) != 1 {
 			return nil, failure("ambiguous", "select a page explicitly; there is not exactly one eligible tab")
 		}
-		id = pages.Pages[0].ID
+		id = 1
 	}
-	for _, info := range pages.Pages {
-		if info.ID == id {
-			return c.pageHandle(id)
-		}
+	if id > PageID(len(pages)) {
+		return nil, failure("page", "the selected page is unavailable or ineligible")
 	}
-	return nil, failure("page", "the selected page is unavailable or ineligible")
+	return c.pageHandle(pages[id-1].ID)
 }
-func (c *Client) pageHandle(id PageID) (*Page, error) {
+func (c *Client) pageHandle(id string) (*Page, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.pages[id]
@@ -89,13 +91,13 @@ func (p *Page) Info(ctx context.Context) (PageInfo, error) {
 	return p.info(ctx)
 }
 func (p *Page) info(ctx context.Context) (PageInfo, error) {
-	result, err := p.client.Pages(ctx)
+	result, err := p.client.pageTargets(ctx)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	for _, info := range result.Pages {
+	for i, info := range result {
 		if info.ID == p.id {
-			return info, nil
+			return info.info(PageID(i + 1)), nil
 		}
 	}
 	return PageInfo{}, failure("page", "the selected page is unavailable or ineligible")
@@ -169,16 +171,16 @@ func (c *Client) Open(ctx context.Context, address string) (*Page, error) {
 		return nil, c.connectionError()
 	}
 	defer func() { <-c.openGate }()
-	pages, err := c.Pages(ctx)
+	pages, err := c.pageTargets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var id PageID
-	if len(pages.Pages) == 1 {
-		id = pages.Pages[0].ID
+	var id string
+	if len(pages) == 1 {
+		id = pages[0].ID
 	} else {
 		var created struct {
-			ID PageID `json:"targetId"`
+			ID string `json:"targetId"`
 		}
 		if err := c.call(ctx, "", "Target.createTarget", map[string]string{"url": "about:blank"}, &created); err != nil {
 			return nil, err

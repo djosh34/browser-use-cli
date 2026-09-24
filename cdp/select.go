@@ -7,16 +7,12 @@ import (
 
 // Select chooses one native select option by exact value or label. Matches
 // across both fields must be unique. Custom comboboxes use Click/Fill/Press.
-func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (ActionResult, error) {
+func (p *Page) Select(ctx context.Context, id ControlID, value string) (_ ActionResult, err error) {
 	if !utf8.ValidString(value) {
 		return ActionResult{}, failure("invalid_input", "option value must be valid UTF-8")
 	}
-	ref, err := reference.decode()
-	if err != nil {
-		return ActionResult{}, err
-	}
-	if ref.Page != p.id {
-		return ActionResult{}, failure("invalid_input", "control reference belongs to another page")
+	if id <= 0 {
+		return ActionResult{}, failure("invalid_input", "control ID must be positive")
 	}
 	if err := p.lock(ctx); err != nil {
 		return ActionResult{}, err
@@ -25,12 +21,13 @@ func (p *Page) Select(ctx context.Context, reference ControlRef, value string) (
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	observation, err := p.beginInput(ctx)
+	observation, err := p.beginInput(ctx, "select", id)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
-	target, err := p.resolveTarget(ctx, ref, observation.documents)
+	defer func() { err = inputError(err, observation.warnings) }()
+	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err

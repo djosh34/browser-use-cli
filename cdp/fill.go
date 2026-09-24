@@ -7,16 +7,12 @@ import (
 
 // Fill replaces text in text-like inputs, textarea, and contenteditable elements
 // with trusted browser input. It does not submit the field or await app timers.
-func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (ActionResult, error) {
+func (p *Page) Fill(ctx context.Context, id ControlID, text string) (_ ActionResult, err error) {
 	if !utf8.ValidString(text) {
 		return ActionResult{}, failure("invalid_input", "fill text must be valid UTF-8")
 	}
-	ref, err := reference.decode()
-	if err != nil {
-		return ActionResult{}, err
-	}
-	if ref.Page != p.id {
-		return ActionResult{}, failure("invalid_input", "control reference belongs to another page")
+	if id <= 0 {
+		return ActionResult{}, failure("invalid_input", "control ID must be positive")
 	}
 	if err := p.lock(ctx); err != nil {
 		return ActionResult{}, err
@@ -25,12 +21,13 @@ func (p *Page) Fill(ctx context.Context, reference ControlRef, text string) (Act
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	observation, err := p.beginInput(ctx)
+	observation, err := p.beginInput(ctx, "fill", id)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
-	target, err := p.resolveTarget(ctx, ref, observation.documents)
+	defer func() { err = inputError(err, observation.warnings) }()
+	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err

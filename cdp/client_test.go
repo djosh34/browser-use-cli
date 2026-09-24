@@ -97,7 +97,7 @@ func TestDiscoveryAndCapturedPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Pages) != 2 || result.Pages[0].ID != "a" || result.Pages[1].ID != "b" {
+	if len(result.Pages) != 2 || result.Pages[0].ID != 1 || result.Pages[1].ID != 2 {
 		t.Fatalf("pages: %+v", result)
 	}
 	if err := c.Close(); err != nil {
@@ -108,7 +108,7 @@ func TestDiscoveryAndCapturedPages(t *testing.T) {
 		t.Fatalf("rendering: %q", text)
 	}
 	data, err := json.Marshal(result)
-	if err != nil || !strings.Contains(string(data), `"id":"a"`) {
+	if err != nil || !strings.Contains(string(data), `"id":1`) {
 		t.Fatalf("JSON: %s %v", data, err)
 	}
 }

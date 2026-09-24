@@ -10,13 +10,22 @@ import (
 // ActionResult reports completed browser input, not application business success.
 // NewPages contains newly observed tabs; it does not change a saved selection.
 type ActionResult struct {
+	Action   string     `json:"action"`
 	Page     PageInfo   `json:"page"`
+	Target   ControlID  `json:"target,omitempty"`
 	NewPages []PageInfo `json:"newPages"`
+	Warnings []string   `json:"warnings,omitempty"`
 }
 
 func (r ActionResult) String() string {
 	var b strings.Builder
-	fmt.Fprint(&b, r.Page)
+	fmt.Fprintf(&b, "%s\t%s", r.Action, r.Page)
+	if r.Target != 0 {
+		fmt.Fprintf(&b, "\t[%d]", r.Target)
+	}
+	for _, warning := range r.Warnings {
+		fmt.Fprintf(&b, "\nWarning: %s", warning)
+	}
 	for _, page := range r.NewPages {
 		fmt.Fprintf(&b, "\nOpened: %s", page)
 	}
@@ -34,56 +43,16 @@ type point struct {
 	Y float64 `json:"y"`
 }
 
-func (p *Page) resolveTarget(ctx context.Context, ref controlRef, documents []documentCapture) (resolvedTarget, error) {
-	if ref.Page != p.id {
-		return resolvedTarget{}, failure("invalid_input", "control reference belongs to another page")
+func (p *Page) resolveTarget(ctx context.Context, binding controlTarget) (resolvedTarget, error) {
+	target := resolvedTarget{doc: binding.doc, chain: binding.chain, backend: binding.backend}
+	if target.backend == 0 {
+		return target, failure("unsupported", "control has no native input target")
 	}
-	target := resolvedTarget{backend: ref.Node}
-	for i, frame := range ref.Frames {
-		found := false
-		for _, doc := range documents {
-			if doc.frame.ID != frame.ID {
-				continue
-			}
-			parent := ""
-			if i > 0 {
-				parent = ref.Frames[i-1].ID
-			}
-			if doc.parent != parent || doc.loader != frame.Loader || doc.snapshot.Nodes[doc.root].Backend != frame.Document {
-				return target, failure("stale", "control document identity has changed")
-			}
-			target.chain = append(target.chain, doc)
-			target.doc = doc
-			found = true
-			break
-		}
-		if !found {
-			return target, failure("stale", "control frame is gone, hidden, or replaced")
-		}
-	}
-	seen := map[int]bool{}
-	var contains func(int) bool
-	contains = func(i int) bool {
-		if i < 0 || i >= len(target.doc.snapshot.Nodes) || seen[i] {
-			return false
-		}
-		seen[i] = true
-		n := target.doc.snapshot.Nodes[i]
-		if n.Backend == ref.Node {
-			return true
-		}
-		for _, child := range n.Children {
-			if contains(child) {
-				return true
-			}
-		}
-		return false
-	}
-	if !contains(target.doc.root) {
-		return target, failure("stale", "control node is detached or replaced")
+	if err := p.validateDocuments(ctx, target.chain); err != nil {
+		return target, err
 	}
 	var err error
-	target.object, err = p.resolveNode(ctx, target.doc, ref.Node)
+	target.object, err = p.resolveNode(ctx, target.doc, target.backend)
 	return target, err
 }
 func (p *Page) resolveNode(ctx context.Context, doc documentCapture, backend int64) (string, error) {
@@ -139,15 +108,11 @@ func targetStatus(status string) error {
 	return failure("blocked", "control is hidden, disabled, covered, or has no supported input point")
 }
 
-// Click validates the complete reference, scrolls the target and ancestor frames,
-// and hit-tests before dispatching one native mouse press/release pair.
-func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, error) {
-	ref, err := reference.decode()
-	if err != nil {
-		return ActionResult{}, err
-	}
-	if ref.Page != p.id {
-		return ActionResult{}, failure("invalid_input", "control reference belongs to another page")
+// Click resolves the current control ordinal, scrolls its native target and
+// ancestor frames, then hit-tests before one native mouse press/release pair.
+func (p *Page) Click(ctx context.Context, id ControlID) (_ ActionResult, err error) {
+	if id <= 0 {
+		return ActionResult{}, failure("invalid_input", "control ID must be positive")
 	}
 	if err := p.lock(ctx); err != nil {
 		return ActionResult{}, err
@@ -156,12 +121,13 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 	if err := p.attach(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	observation, err := p.beginInput(ctx)
+	observation, err := p.beginInput(ctx, "click", id)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	defer p.endInput(observation)
-	target, err := p.resolveTarget(ctx, ref, observation.documents)
+	defer func() { err = inputError(err, observation.warnings) }()
+	target, err := p.resolveTarget(ctx, observation.target)
 	defer p.releaseTargets(ctx, target.chain)
 	if err != nil {
 		return ActionResult{}, err
@@ -192,24 +158,27 @@ func (p *Page) Click(ctx context.Context, reference ControlRef) (ActionResult, e
 	}
 	return p.completeInput(ctx, observation, target.doc)
 }
-func (p *Page) actionResult(ctx context.Context, before PagesResult) (ActionResult, error) {
-	info, err := p.info(ctx)
+func (p *Page) actionResult(ctx context.Context, a *inputObservation) (ActionResult, error) {
+	after, err := p.client.pageTargets(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	after, err := p.client.Pages(ctx)
-	if err != nil {
-		return ActionResult{}, err
-	}
-	old := map[PageID]bool{}
-	for _, page := range before.Pages {
+	old := map[string]bool{}
+	for _, page := range a.before {
 		old[page.ID] = true
 	}
-	result := ActionResult{Page: info, NewPages: []PageInfo{}}
-	for _, page := range after.Pages {
-		if !old[page.ID] {
-			result.NewPages = append(result.NewPages, page)
+	result := ActionResult{Action: a.action, Target: a.id, NewPages: []PageInfo{}, Warnings: a.warnings}
+	for i, page := range after {
+		info := page.info(PageID(i + 1))
+		if page.ID == p.id {
+			result.Page = info
 		}
+		if !old[page.ID] {
+			result.NewPages = append(result.NewPages, info)
+		}
+	}
+	if result.Page.ID == 0 {
+		return ActionResult{}, failure("page", "the selected page is unavailable or ineligible")
 	}
 	return result, nil
 }
@@ -303,7 +272,7 @@ const inputHelpers = `
   if (el.matches(':disabled') || getComputedStyle(el).visibility!=='visible') return 'blocked';
   for(let n=el;n;n=n.parentElement || n.getRootNode().host){
    const s=getComputedStyle(n);
-   if(n.inert || n.getAttribute('aria-disabled')==='true' || s.display==='none' || s.opacity==='0' || s.contentVisibility==='hidden') return 'blocked';
+   if(n.inert || n.getAttribute('aria-disabled')==='true' || s.display==='none' || s.contentVisibility==='hidden') return 'blocked';
   }
   return '';
  }
@@ -320,7 +289,11 @@ const inputHelpers = `
 const clickPoints = `function(){` + inputHelpers + `
  const status=state(this);if(status) return {status,points:[]};
  const clip={left:0,top:0,right:innerWidth,bottom:innerHeight};
+ const rootStyle=getComputedStyle(document.documentElement);
  for(let n=this.parentElement || this.getRootNode().host;n;n=n.parentElement || n.getRootNode().host){
+  // Root overflow (and body overflow propagated through a visible root)
+  // clips at the viewport, not at its document box shifted by window scroll.
+  if(n===document.documentElement || n===document.body && rootStyle.overflowX==='visible' && rootStyle.overflowY==='visible') continue;
   if(!n.getClientRects().length) continue;
   const style=getComputedStyle(n),r=n.getBoundingClientRect(),sx=n.offsetWidth?r.width/n.offsetWidth:1,sy=n.offsetHeight?r.height/n.offsetHeight:1;
   const left=r.left+n.clientLeft*sx,top=r.top+n.clientTop*sy;
