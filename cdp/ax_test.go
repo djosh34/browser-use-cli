@@ -144,6 +144,59 @@ func TestAXRolesEditableRootsAndOptions(t *testing.T) {
 	}
 }
 
+func TestAXDirectRolesVersusCollectionContexts(t *testing.T) {
+	p := axPage(t, `<title>Role matrix</title><div role="button" aria-label="Button"></div><a href="#">Link</a><div role="checkbox" aria-label="Checkbox" aria-checked="mixed"></div><div role="radio" aria-label="Radio" aria-checked="false"></div><div role="textbox" aria-label="Textbox"></div><div role="searchbox" aria-label="Search"></div><div role="combobox" aria-label="Combo" aria-expanded="false"></div><div role="listbox" aria-label="Listbox"><div role="option" aria-label="Option" aria-selected="false"></div></div><div role="menu"><div role="menuitem" aria-label="Menuitem"></div><div role="menuitemcheckbox" aria-label="Menucheck" aria-checked="mixed"></div><div role="menuitemradio" aria-label="Menuradio" aria-checked="false"></div></div><div role="slider" aria-label="Slider" aria-valuenow="4"></div><div role="spinbutton" aria-label="Spin" aria-valuenow="2"></div><div role="scrollbar" aria-label="Scroll" aria-valuenow="10" aria-controls="content"></div><div role="switch" aria-label="Switch" aria-checked="false"></div><div role="tablist" aria-label="Tablist"><div role="tab" aria-label="Tab" aria-selected="false"></div></div><div role="tree" aria-label="Tree"><div role="treeitem" aria-label="Treeitem"></div></div><div role="menubar" aria-label="Menubar"></div><div role="radiogroup" aria-label="Radiogroup"></div><div role="tabpanel" aria-label="Panel"></div><input type="datetime-local" aria-label="Datetime"><button disabled aria-label="Disabled"></button><button></button>`)
+	r, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"Button", "Link", "Checkbox", "Radio", "Textbox", "Search", "Combo", "Listbox", "Option", "Menuitem", "Menucheck", "Menuradio", "Slider", "Spin", "Scroll", "Switch", "Tab", "Treeitem"}
+	for i, name := range names {
+		if n := axNamed(t, r, name); n.ID != cdp.ControlID(i+1) {
+			t.Errorf("%s id=%d want=%d", name, n.ID, i+1)
+		}
+	}
+	for _, name := range []string{"Tablist", "Tree", "Menubar", "Radiogroup", "Panel"} {
+		if axNamed(t, r, name).ID != 0 {
+			t.Errorf("collection/context numbered: %s", name)
+		}
+	}
+	if n := axNamed(t, r, "Datetime"); n.ID == 0 || n.Role != "DateTime" {
+		t.Fatalf("datetime alias: %+v", n)
+	}
+	if n := axNamed(t, r, "Disabled"); n.ID == 0 || n.State["disabled"] != true {
+		t.Fatalf("disabled omitted: %+v", n)
+	}
+	unnamed := 0
+	for _, n := range axNodes(r.Tree) {
+		if n.Role == "button" && n.Name == "" && n.ID != 0 {
+			unnamed++
+		}
+	}
+	if unnamed != 1 {
+		t.Fatalf("unnamed controls=%d", unnamed)
+	}
+	if axNamed(t, r, "Checkbox").State["checked"] != "mixed" || axNamed(t, r, "Combo").State["expanded"] != false || axNamed(t, r, "Option").State["selected"] != false {
+		t.Fatalf("meaningful false/mixed state: %s", r)
+	}
+}
+
+func TestAXLongDistinctContentIsNotTruncated(t *testing.T) {
+	content := strings.Repeat("Long Unicode 日本語 paragraph. ", 10000)
+	p := axPage(t, `<title>Long content</title><article><p>`+content+`</p><p>Tail survives.</p></article>`)
+	r, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for _, n := range axNodes(r.Tree) {
+		text.WriteString(n.Text)
+	}
+	if !strings.Contains(text.String(), strings.TrimSpace(content)) || !strings.Contains(text.String(), "Tail survives.") {
+		t.Fatalf("long content truncated (%d bytes)", text.Len())
+	}
+}
+
 func TestAXExposedContentNotLayoutDiscovery(t *testing.T) {
 	p := axPage(t, `<title>Exposure</title><h1>Heading</h1><button disabled>Disabled</button><button style="opacity:0">Transparent</button><button style="display:contents">Contents</button><button style="position:absolute;top:3000px">Offscreen</button><button aria-hidden="true">Hidden AX</button><div inert><button>Inert</button></div><button hidden>Hidden DOM</button>`)
 	r, err := p.Read(testContext(t), cdp.ReadOptions{})

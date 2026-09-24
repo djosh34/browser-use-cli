@@ -8,6 +8,20 @@ import (
 	"testing"
 )
 
+func TestAXHiddenEmbeddingsDoNotResurrectChildDocuments(t *testing.T) {
+	p := axPage(t, `<title>Hidden frames</title><button>Visible</button><iframe hidden srcdoc="<button>Hidden child</button>"></iframe><iframe aria-hidden="true" srcdoc="<button>ARIA hidden child</button>"></iframe><div inert><iframe srcdoc="<button>Inert child</button>"></iframe></div>`)
+	r, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Complete {
+		t.Fatalf("hidden frames are not failed captures: %s", r)
+	}
+	if got := controlNames(r); len(got) != 1 || got[0] != "Visible" {
+		t.Fatalf("hidden child resurrection: %v\n%s", got, r)
+	}
+}
+
 func TestAXFramesAndShadowsSharePreorder(t *testing.T) {
 	fixture := observationFixture(t)
 	c := browserClient(t, chrome(t, "--window-size=1440,1000", "--ozone-override-screen-size=1440,1000", "--force-device-scale-factor=1", "--site-per-process", "about:blank"))
