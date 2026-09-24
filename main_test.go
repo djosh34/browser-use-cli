@@ -33,6 +33,8 @@ func TestCLIUsageAndMetadata(t *testing.T) {
 		{"removed controls", []string{"controls", "--json"}, 2, false},
 		{"removed verbose", []string{"read", "--json", "--verbose"}, 2, true},
 		{"zero page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page", "0"}, 2, true},
+		{"empty page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page="}, 2, true},
+		{"overflow page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page", "9999999999999999999999999"}, 2, true},
 		{"negative page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page=-1"}, 2, true},
 		{"non-numeric page", []string{"--endpoint", "http://127.0.0.1:1", "read", "--json", "--page", "SECRET-value"}, 2, true},
 		{"zero control", []string{"click", "--json", "0"}, 2, true},
