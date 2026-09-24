@@ -271,7 +271,7 @@ const inputHelpers = `
   if (el.matches(':disabled') || getComputedStyle(el).visibility!=='visible') return 'blocked';
   for(let n=el;n;n=n.parentElement || n.getRootNode().host){
    const s=getComputedStyle(n);
-   if(n.inert || n.getAttribute('aria-disabled')==='true' || s.display==='none' || s.opacity==='0' || s.contentVisibility==='hidden') return 'blocked';
+   if(n.inert || n.getAttribute('aria-disabled')==='true' || s.display==='none' || s.contentVisibility==='hidden') return 'blocked';
   }
   return '';
  }

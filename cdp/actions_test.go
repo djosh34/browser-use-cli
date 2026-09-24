@@ -132,6 +132,48 @@ func TestChromeInputDoesNotRetargetDisappearingNativeNode(t *testing.T) {
 	}
 }
 
+func TestChromeClickTransparentNativeRadio(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Radio</title><input id="radio" type="radio" style="opacity:0;width:48px;height:48px" onchange="document.title=String(event.isTrusted)"><label for="radio">Nonstop only</label>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Click(testContext(t), targetNamed(t, p, "Nonstop only"))
+	if err != nil || result.Page.Title != "true" {
+		t.Fatalf("transparent native hit target rejected: %s %v", result, err)
+	}
+	read, err := p.Read(testContext(t), cdp.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := false
+	for _, n := range controlNodes(read.Tree) {
+		if n.Name == "Nonstop only" && n.State["checked"] == true {
+			checked = true
+		}
+	}
+	if !checked {
+		t.Fatalf("native radio was not checked: %s", read)
+	}
+	for _, setup := range []string{
+		`document.querySelector('input').disabled=true`,
+		`document.querySelector('input').disabled=false;document.body.insertAdjacentHTML('beforeend','<div style="position:fixed;inset:0;background:white"></div>')`,
+	} {
+		if _, err := p.Eval(testContext(t), setup+`;void 0`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := p.Click(testContext(t), targetNamed(t, p, "Nonstop only"))
+		var typed *cdp.Error
+		if !errors.As(err, &typed) || typed.Code != "blocked" {
+			t.Fatalf("transparent control lost disabled/covered guard: %v", err)
+		}
+	}
+}
+
 func TestChromeClickAfterScrollingViewportOverflowBody(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<!doctype html><title>Before</title><style>body{margin:0;height:100vh;overflow-y:scroll}main{height:1500px}button{margin-top:1100px}</style><main><button onclick="document.title='Clicked'">Reject optional</button></main>`)
