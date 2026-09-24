@@ -132,6 +132,22 @@ func TestChromeInputDoesNotRetargetDisappearingNativeNode(t *testing.T) {
 	}
 }
 
+func TestChromeClickAfterScrollingViewportOverflowBody(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Before</title><style>body{margin:0;height:100vh;overflow-y:scroll}main{height:1500px}button{margin-top:1100px}</style><main><button onclick="document.title='Clicked'">Reject optional</button></main>`)
+	}))
+	defer fixture.Close()
+	c := browserClient(t, chrome(t, "about:blank"))
+	p, err := c.Open(testContext(t), fixture.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Click(testContext(t), targetNamed(t, p, "Reject optional"))
+	if err != nil || result.Page.Title != "Clicked" {
+		t.Fatalf("viewport-propagated body overflow blocked visible target after scroll: %s %v", result, err)
+	}
+}
+
 func TestChromeClickClippedAndMultirectControls(t *testing.T) {
 	fixture := actionFixture(t)
 	c := browserClient(t, chrome(t, "about:blank"))

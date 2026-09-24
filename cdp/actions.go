@@ -288,7 +288,11 @@ const inputHelpers = `
 const clickPoints = `function(){` + inputHelpers + `
  const status=state(this);if(status) return {status,points:[]};
  const clip={left:0,top:0,right:innerWidth,bottom:innerHeight};
+ const rootStyle=getComputedStyle(document.documentElement);
  for(let n=this.parentElement || this.getRootNode().host;n;n=n.parentElement || n.getRootNode().host){
+  // Root overflow (and body overflow propagated through a visible root)
+  // clips at the viewport, not at its document box shifted by window scroll.
+  if(n===document.documentElement || n===document.body && rootStyle.overflowX==='visible' && rootStyle.overflowY==='visible') continue;
   if(!n.getClientRects().length) continue;
   const style=getComputedStyle(n),r=n.getBoundingClientRect(),sx=n.offsetWidth?r.width/n.offsetWidth:1,sy=n.offsetHeight?r.height/n.offsetHeight:1;
   const left=r.left+n.clientLeft*sx,top=r.top+n.clientTop*sy;
