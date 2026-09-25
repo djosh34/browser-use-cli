@@ -91,7 +91,16 @@ const fillHelpers = targetHelpers + `
   if(!focused(el)) return 'focus';
   if(el.isContentEditable){
    const selection=selectionFor(el);if(!selection || selection.rangeCount!==1) return 'selection';
-   const range=selection.getRangeAt(0);
+   let range=selection.getRangeAt(0);
+   const root=el.getRootNode(),documentSelection=getSelection();
+   if(root instanceof ShadowRoot && typeof documentSelection.getComposedRanges==='function'){
+    // Legacy shadow ranges can even collapse across empty text children.
+    // An explicitly permitted shadow root exposes the underlying DOM range,
+    // including in closed roots, without weakening full-replacement proof.
+    const ranges=documentSelection.getComposedRanges({shadowRoots:[root]});
+    if(ranges.length!==1) return 'selection';
+    range=ranges[0];
+   }
    if(!atContentEdge(range.startContainer,range.startOffset,el,false) || !atContentEdge(range.endContainer,range.endOffset,el,true)) return 'selection';
   }else if(el.selectionStart!==null){
    if(el.selectionStart!==0 || el.selectionEnd!==el.value.length) return 'selection';
