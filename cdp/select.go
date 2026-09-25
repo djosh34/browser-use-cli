@@ -32,52 +32,69 @@ func (p *Page) Select(ctx context.Context, id ControlID, value string) (_ Action
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if _, err := p.inputPoint(ctx, target); err != nil {
+	if err := p.checkTarget(ctx, target, true); err != nil {
+		return ActionResult{}, err
+	}
+	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
 		return ActionResult{}, err
 	}
 	if err := observation.startInput(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.client.call(ctx, target.doc.session, "DOM.focus", map[string]string{"objectId": target.object}, nil); err != nil {
+	if err := p.runTarget(ctx, target, focusTarget, nil, true); err != nil {
 		return ActionResult{}, err
 	}
 	if err := p.settleFrame(ctx, target.doc); err != nil {
 		return ActionResult{}, err
 	}
-	if _, err := p.inputPoint(ctx, target); err != nil {
+	if err := p.checkTarget(ctx, target, true); err != nil {
 		return ActionResult{}, err
 	}
-	var status string
-	if err := p.nodeCall(ctx, target.doc, target.object, selectOption, []any{value}, &status); err != nil {
+	// Native values/labels identify the requested option; only AX decides its
+	// eligibility. Retain the actual option object across that AX query, so a
+	// replacement at the same index/value never silently receives the action.
+	option, err := p.callTarget(ctx, target, findOption, []any{value}, false)
+	if err != nil {
 		return ActionResult{}, err
 	}
-	switch status {
-	case "not_select":
-		return ActionResult{}, failure("invalid_input", "control is not a native select")
-	case "missing":
-		return ActionResult{}, failure("invalid_input", "no option has that exact value or label")
-	case "ambiguous":
-		return ActionResult{}, failure("ambiguous", "more than one option has that exact value or label")
-	case "option_disabled":
-		return ActionResult{}, failure("blocked", "matching option is disabled or hidden")
-	case "focus":
-		return ActionResult{}, failure("blocked", "select lost focus before input")
+	if option.ID == "" {
+		return ActionResult{}, targetResult(option)
 	}
-	if err := targetStatus(status); err != nil {
+	var described struct {
+		Node domNode `json:"node"`
+	}
+	if err := p.client.call(ctx, target.doc.session, "DOM.describeNode", map[string]string{"objectId": option.ID}, &described); err != nil {
+		return ActionResult{}, err
+	}
+	if described.Node.Backend == 0 {
+		return ActionResult{}, failure("protocol", "option has no native identity")
+	}
+	boundOption := resolvedTarget{doc: target.doc, chain: target.chain, backend: described.Node.Backend, object: option.ID}
+	if err := p.checkTarget(ctx, boundOption, true); err != nil {
+		return ActionResult{}, err
+	}
+	if err := p.runTarget(ctx, target, selectOption, []any{option, value}, true); err != nil {
 		return ActionResult{}, err
 	}
 	return p.completeInput(ctx, observation, target.doc)
 }
 
-const selectOption = `function(value){` + inputHelpers + `
- const s=state(this);if(s) return s;
- if(!(this instanceof HTMLSelectElement)) return 'not_select';
- if(this.getAttribute('aria-readonly')==='true') return 'blocked';
- if(this.getRootNode().activeElement!==this) return 'focus';
- const matches=Array.from(this.options).filter(option=>option.value===value || option.label===value);
- if(matches.length===0) return 'missing';if(matches.length!==1) return 'ambiguous';
- const option=matches[0];
- if(option.matches(':disabled') || option.hidden || getComputedStyle(option).display==='none' || option.parentElement.hidden || getComputedStyle(option.parentElement).display==='none') return 'option_disabled';
+const optionHelpers = targetHelpers + `
+ function matchOption(el,value){
+  const status=connected(el);if(status) return status;
+  if(!(el instanceof HTMLSelectElement)) return 'not_select';
+  const matches=Array.from(el.options).filter(option=>option.value===value || option.label===value);
+  if(matches.length===0) return 'missing';
+  if(matches.length!==1) return 'ambiguous';
+  return matches[0];
+ }
+`
+const findOption = `function(value){` + optionHelpers + `return matchOption(this,value);}`
+const selectOption = `function(option,value){` + optionHelpers + `
+ const status=connected(this) || connected(option);if(status) return status;
+ const match=matchOption(this,value);
+ if(typeof match==='string') return match;
+ if(match!==option) return 'stale';
  if(this.selectedIndex===option.index && this.selectedOptions.length===1) return '';
  this.selectedIndex=option.index;
  this.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
