@@ -72,6 +72,19 @@ const fillHelpers = targetHelpers + `
  function focused(el){
   return document.hasFocus() && el.getRootNode().activeElement===el;
  }
+ // ShadowRoot.getSelection() normalizes an element-content range to text
+ // endpoints. Accept equivalent DOM edges, not just equal selected text: a
+ // partial range containing duplicated text must never pass as replacement.
+ function atContentEdge(node,offset,el,end){
+  while(node!==el){
+   const length=node instanceof CharacterData ? node.length : node.childNodes.length;
+   if(offset!==(end ? length : 0)) return false;
+   const parent=node.parentNode;if(!parent) return false;
+   offset=Array.prototype.indexOf.call(parent.childNodes,node)+(end ? 1 : 0);
+   node=parent;
+  }
+  return offset===(end ? el.childNodes.length : 0);
+ }
  function fillState(el){
   const status=connected(el);if(status) return status;
   if(!editable(el)) return 'not_editable';
@@ -79,7 +92,7 @@ const fillHelpers = targetHelpers + `
   if(el.isContentEditable){
    const selection=selectionFor(el);if(!selection || selection.rangeCount!==1) return 'selection';
    const range=selection.getRangeAt(0);
-   if(range.startContainer!==el || range.startOffset!==0 || range.endContainer!==el || range.endOffset!==el.childNodes.length) return 'selection';
+   if(!atContentEdge(range.startContainer,range.startOffset,el,false) || !atContentEdge(range.endContainer,range.endOffset,el,true)) return 'selection';
   }else if(el.selectionStart!==null){
    if(el.selectionStart!==0 || el.selectionEnd!==el.value.length) return 'selection';
   }else{

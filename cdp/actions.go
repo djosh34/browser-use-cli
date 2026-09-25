@@ -253,7 +253,10 @@ const focusTarget = `function(){` + targetHelpers + `
 }`
 const activateTarget = `function(){` + targetHelpers + `
  const status=connected(this);if(status) return status;
- if(typeof this.click!=='function') return 'unsupported';
- this.click();
+ // Choose one activation before dispatch; never retry after a handler or
+ // native default may have run. SVG exposes no HTMLElement.click() method.
+ if(typeof this.click==='function') this.click();
+ else if(this instanceof SVGElement) this.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,view:window}));
+ else return 'unsupported';
  return '';
 }`
