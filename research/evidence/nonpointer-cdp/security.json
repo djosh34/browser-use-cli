@@ -1,0 +1,30 @@
+{
+  "sandbox": "Sandbox Status\nLayer 1 Sandbox\tNamespace\nPID namespaces\tYes\nNetwork namespaces\tYes\nSeccomp-BPF sandbox\tYes\nSeccomp-BPF sandbox supports TSYNC\tYes\nPtrace Protection with Yama LSM (Broker)\tNo\nPtrace Protection with Yama LSM (Non-broker)\tNo\n\nYou are adequately sandboxed.",
+  "security": {
+    "visibleSecurityState": {
+      "securityState": "secure",
+      "certificateSecurityState": {
+        "protocol": "TLS 1.3",
+        "keyExchange": "",
+        "keyExchangeGroup": "X25519MLKEM768",
+        "cipher": "AES_256_GCM",
+        "certificate": [
+          "MIIDSzCCAjOgAwIBAgIUO1UuWdrse6L7evht60XQxJTCrrIwDQYJKoZIhvcNAQELBQAwJzElMCMGA1UEAwwcbm9ucG9pbnRlci1jZHAtb3duZWQtZml4dHVyZTAeFw0yNjA5MjUwODQ5MDVaFw0yNjA5MjcwODQ5MDVaMCcxJTAjBgNVBAMMHG5vbnBvaW50ZXItY2RwLW93bmVkLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC5oiPzg+IwsVdUve3VaUTlLWh8H9GuYi38eo2jw+qMfRMBT/RLe2tI2XxVtwX7itmI7UHfsWXxe8H/c2bzszqZ/LQH3g6yipzS2wQGRyQLpU11lPWqwnRAVUbqUqklxPSKQHVcEswBCGxoo7D2VnFqZZgnpYWmgQrmZspXvlZaLMn8b12rlYQ30iJcxybynNtxQmEdxpAqW3bTAenFFOT6m6Y8kxK9czhXvVAfnMTDzyqRECg0yxPRmdxWkCihFWMNlgIslFkeMiqmDPesbWXyT7k5dg2v4E2TM7JxO2cbKOkLPfrZ26/xeojcD2YxSTFZy5xyywIq+svuMnSyteqLAgMBAAGjbzBtMB0GA1UdDgQWBBROftyw2Ifuq0UQQ9rU2Jsr3x66izAfBgNVHSMEGDAWgBROftyw2Ifuq0UQQ9rU2Jsr3x66izAPBgNVHRMBAf8EBTADAQH/MBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAj74ukKdl71cNM/KyITT4LLgk1VgM1sYTSK/oQGUEv/MjMU5TAT5620a9ICGWykrbA/IJyoOtG2JDzoFhCBpk74x4KAY3+BrhX0dFsIg+boBz2rcSWqFVAW9shnGtUAxNmdpZmpONh40oesX+ODHQykB5PnL2Ydehcnz1rZYmMAFsLkDlsjSHPeVERUSvS0UOH9upG1TCW9iql9RBMwnZtRDa9MESnDZyPe1DMiDZylAjab3UsvEeDkzI99nAnEP2zc5YAZu2Yd0SsoGhouUffja4+l01olOgA3+/vj4xgYyd8W1BlmHj6MCVboJt514Uu0han7JmvqresPZBBp2AAg==",
+          "MIIDSzCCAjOgAwIBAgIUO1UuWdrse6L7evht60XQxJTCrrIwDQYJKoZIhvcNAQELBQAwJzElMCMGA1UEAwwcbm9ucG9pbnRlci1jZHAtb3duZWQtZml4dHVyZTAeFw0yNjA5MjUwODQ5MDVaFw0yNjA5MjcwODQ5MDVaMCcxJTAjBgNVBAMMHG5vbnBvaW50ZXItY2RwLW93bmVkLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC5oiPzg+IwsVdUve3VaUTlLWh8H9GuYi38eo2jw+qMfRMBT/RLe2tI2XxVtwX7itmI7UHfsWXxe8H/c2bzszqZ/LQH3g6yipzS2wQGRyQLpU11lPWqwnRAVUbqUqklxPSKQHVcEswBCGxoo7D2VnFqZZgnpYWmgQrmZspXvlZaLMn8b12rlYQ30iJcxybynNtxQmEdxpAqW3bTAenFFOT6m6Y8kxK9czhXvVAfnMTDzyqRECg0yxPRmdxWkCihFWMNlgIslFkeMiqmDPesbWXyT7k5dg2v4E2TM7JxO2cbKOkLPfrZ26/xeojcD2YxSTFZy5xyywIq+svuMnSyteqLAgMBAAGjbzBtMB0GA1UdDgQWBBROftyw2Ifuq0UQQ9rU2Jsr3x66izAfBgNVHSMEGDAWgBROftyw2Ifuq0UQQ9rU2Jsr3x66izAPBgNVHRMBAf8EBTADAQH/MBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAj74ukKdl71cNM/KyITT4LLgk1VgM1sYTSK/oQGUEv/MjMU5TAT5620a9ICGWykrbA/IJyoOtG2JDzoFhCBpk74x4KAY3+BrhX0dFsIg+boBz2rcSWqFVAW9shnGtUAxNmdpZmpONh40oesX+ODHQykB5PnL2Ydehcnz1rZYmMAFsLkDlsjSHPeVERUSvS0UOH9upG1TCW9iql9RBMwnZtRDa9MESnDZyPe1DMiDZylAjab3UsvEeDkzI99nAnEP2zc5YAZu2Yd0SsoGhouUffja4+l01olOgA3+/vj4xgYyd8W1BlmHj6MCVboJt514Uu0han7JmvqresPZBBp2AAg=="
+        ],
+        "subjectName": "nonpointer-cdp-owned-fixture",
+        "issuer": "nonpointer-cdp-owned-fixture",
+        "validFrom": 1790326145,
+        "validTo": 1790498945,
+        "certificateHasWeakSignature": false,
+        "certificateHasSha1Signature": false,
+        "modernSSL": true,
+        "obsoleteSslProtocol": false,
+        "obsoleteSslKeyExchange": false,
+        "obsoleteSslCipher": false,
+        "obsoleteSslSignature": false
+      },
+      "securityStateIssueIds": []
+    }
+  }
+}
