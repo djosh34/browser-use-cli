@@ -7,7 +7,7 @@ A small Chrome automation CLI and reusable Go `cdp` package. Read Chrome's nativ
 Requires Go 1.26 or newer. Build targets: Linux and macOS, amd64 and arm64.
 
 ```sh
-go install github.com/djosh34/browser-use-cli@v0.1.0
+go install github.com/djosh34/browser-use-cli@v0.2.0
 # Or follow the latest release:
 go install github.com/djosh34/browser-use-cli@latest
 ```
@@ -80,9 +80,11 @@ JSON uses `page`, `complete`, `tree` and optional `warnings`. Nodes contain `rol
 
 `press` accepts one character, Enter, Tab, Escape, Space, arrow keys, Home, End, PageUp, PageDown, Backspace, Delete and Insert. Combine with Control, Alt, Meta or Shift, such as `Shift+Tab`. Ctrl and Cmd are aliases.
 
-`fill` replaces supported input, textarea or contenteditable text through browser input. `select` requires a native select and an exact option value or label. Missing, ambiguous and disabled choices fail. Native selection uses the DOM setter and input/change events; those events are not trusted browser input. Use click/fill/press for custom widgets.
+`click` performs coordinate-free DOM activation with user activation: the native click method, or one dispatched DOM click event for SVG targets without that method. It attempts browser-managed focus first, but a non-focusable target can still be activated. Site-directed focus changes are left intact. This is **not an OS accessibility action or mouse-event emulation**: the click is untrusted and has no pointer-down/up sequence. Trust-gated or pointer-only handlers and some native picker/option actions therefore differ. Useful native defaults such as links, form submission and checkbox toggling remain browser-managed. There is no pointer fallback or automatic replay through another mechanism.
 
-Observation is not a guarantee of actionability. Actions scroll automatically, recheck state, and hit-test through frame/shadow and overlay chains. Disabled, covered or otherwise unsupported targets fail clearly; readonly fields reject Fill. Actions never automatically replay uncertain input. Native dialogs interrupt with an error and are not accepted automatically.
+`fill` replaces supported input, textarea or contenteditable text using Chrome's editing command, with focus/selection validation and insertion in one JavaScript turn. It emits native `input`, but not `beforeinput` or `textInput`; handlers requiring those events differ from typed input. It must retain the intended target's focus and full replacement selection; it fails rather than typing into another field or knowingly inserting only part of a replacement. If full selection cannot be proven (for example, a number's displayed text differs from its machine value), Fill fails without attempting insertion. `select` requires a native select and an exact option value or label. Missing, ambiguous and AX-disabled choices fail. It attempts focus but operates on the bound select even if the site moves focus elsewhere. An unchanged selection emits no events; changed selection uses the DOM setter and input/change events, which are not trusted browser input. Use click/fill/press for custom widgets. `press` sends keyboard input to actual browser focus.
+
+Chrome's exposed accessibility tree and state are the sole discovery and semantic eligibility authority. AX-disabled controls reject actions; AX-readonly constrains editing, not ordinary activation. Overlays, pointer-events, clipping, offscreen position and frame transforms do not veto element actions. There is no separate scroll-to-click prerequisite, although browser-managed focus may naturally scroll. Native capabilities still determine which operations an element supports. A vanished target or protocol failure is an error, not a visual-actionability rule. Actions never automatically replay uncertain input. Native dialogs interrupt with an error and are not accepted automatically.
 
 Actions return a small result with the action, page metadata, optional target control number, newly observed `newPages` and any discovery warnings. They do not return a page tree or echo filled text. A completed input is **not a claim of application business success**. Open/Navigate wait for the requested document load; input waits for bounded observed navigation and immediate rendering/tasks. Later timers, suggestions, fetches and SPA changes may require a later Read. New tabs do not change a saved selection.
 

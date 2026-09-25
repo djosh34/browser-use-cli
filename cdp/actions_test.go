@@ -220,7 +220,7 @@ func TestChromeInputDoesNotRetargetDisappearingNativeNode(t *testing.T) {
 	for _, kind := range []string{"click", "fill", "select"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprint(w, `<title>Untouched</title><button onmouseenter="replace(this)" onclick="document.title='Wrong button'">Button</button><input aria-label="Field" onfocus="replace(this)"><select aria-label="Choice" onfocus="replace(this)"><option>A</option><option>B</option></select><script>function replace(el){const replacement=el.cloneNode(true);replacement.removeAttribute('onfocus');replacement.removeAttribute('onmouseenter');el.replaceWith(replacement);if(replacement.tagName!=='BUTTON')replacement.focus()}</script>`)
+				fmt.Fprint(w, `<title>Untouched</title><button onfocus="replace(this)" onclick="document.title='Wrong button'">Button</button><input aria-label="Field" onfocus="replace(this)"><select aria-label="Choice" onfocus="replace(this)"><option>A</option><option>B</option></select><script>function replace(el){const replacement=el.cloneNode(true);replacement.removeAttribute('onfocus');replacement.removeAttribute('onmouseenter');el.replaceWith(replacement);if(replacement.tagName!=='BUTTON')replacement.focus()}</script>`)
 			}))
 			defer fixture.Close()
 			c := browserClient(t, chrome(t, "about:blank"))
@@ -276,7 +276,6 @@ func TestChromeClickTransparentNativeRadio(t *testing.T) {
 	}
 	for _, setup := range []string{
 		`document.querySelector('input').disabled=true`,
-		`document.querySelector('input').disabled=false;document.body.insertAdjacentHTML('beforeend','<div style="position:fixed;inset:0;background:white"></div>')`,
 	} {
 		if _, err := p.Eval(testContext(t), setup+`;void 0`); err != nil {
 			t.Fatal(err)
@@ -284,7 +283,7 @@ func TestChromeClickTransparentNativeRadio(t *testing.T) {
 		_, err := p.Click(testContext(t), targetNamed(t, p, "Nonstop only"))
 		var typed *cdp.Error
 		if !errors.As(err, &typed) || typed.Code != "blocked" {
-			t.Fatalf("transparent control lost disabled/covered guard: %v", err)
+			t.Fatalf("transparent control lost AX-disabled guard: %v", err)
 		}
 	}
 }
@@ -847,7 +846,7 @@ func TestChromeFillUsesNativeReplacement(t *testing.T) {
 	}
 }
 
-func TestChromeClickRejectsHoverOverlayAndAncestorCover(t *testing.T) {
+func TestChromeClickIgnoresHoverAndAncestorCover(t *testing.T) {
 	t.Run("hover", func(t *testing.T) {
 		fixture := actionFixture(t)
 		c := browserClient(t, chrome(t, "about:blank"))
@@ -859,13 +858,11 @@ func TestChromeClickRejectsHoverOverlayAndAncestorCover(t *testing.T) {
 		if _, err := p.Eval(testContext(t), `document.querySelector('#hit').onmouseenter=()=>document.body.insertAdjacentHTML('beforeend','<div style="position:fixed;inset:0;z-index:999;background:white"></div>');void 0`); err != nil {
 			t.Fatal(err)
 		}
-		_, err = p.Click(testContext(t), ref)
-		var e *cdp.Error
-		if !errors.As(err, &e) || e.Code != "blocked" {
-			t.Fatalf("hover cover: %v", err)
+		if _, err := p.Click(testContext(t), ref); err != nil {
+			t.Fatalf("semantic activation must not require hovering: %v", err)
 		}
-		if evalValue(t, p, `String(document.querySelector('#hit').dataset.count||0)`) != "0" {
-			t.Fatal("hover caused unsafe input")
+		if evalValue(t, p, `String(document.querySelector('#hit').dataset.count||0)+'|'+document.querySelectorAll('[style*="position:fixed"]').length`) != "1|0" {
+			t.Fatal("click did not activate exactly once without pointer movement")
 		}
 	})
 	t.Run("ancestor", func(t *testing.T) {
@@ -879,17 +876,15 @@ func TestChromeClickRejectsHoverOverlayAndAncestorCover(t *testing.T) {
 		if _, err := p.Eval(testContext(t), `document.body.insertAdjacentHTML('beforeend','<div style="position:fixed;inset:0;z-index:999;background:white"></div>')`); err != nil {
 			t.Fatal(err)
 		}
-		_, err = p.Click(testContext(t), ref)
-		var e *cdp.Error
-		if !errors.As(err, &e) || e.Code != "blocked" {
-			t.Fatalf("ancestor cover: %v", err)
+		if _, err := p.Click(testContext(t), ref); err != nil {
+			t.Fatalf("covered ancestor must not veto an exposed frame control: %v", err)
 		}
 		read, err := p.Read(testContext(t), cdp.ReadOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(read.String(), "Nested inner button!") {
-			t.Fatal("input bypassed covered ancestor frame")
+		if !strings.Contains(read.String(), "Nested inner button!") {
+			t.Fatal("covered frame target was not activated")
 		}
 	})
 }
@@ -933,7 +928,7 @@ func TestChromeClickTraversesNestedFramesAndShadows(t *testing.T) {
 	}
 }
 
-func TestChromeClickReattachesAndRejectsUnsafeTargets(t *testing.T) {
+func TestChromeClickReattachesAndResolvesCurrentOrdinals(t *testing.T) {
 	fixture := actionFixture(t)
 	endpoint := chrome(t, "about:blank")
 	c := browserClient(t, endpoint)
@@ -963,13 +958,11 @@ func TestChromeClickReattachesAndRejectsUnsafeTargets(t *testing.T) {
 	if _, err := p.Eval(testContext(t), `document.body.insertAdjacentHTML('beforeend','<div id="overlay" style="position:fixed;inset:0;z-index:999;background:white"></div>')`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Click(testContext(t), ref)
-	var e *cdp.Error
-	if !errors.As(err, &e) || e.Code != "blocked" {
-		t.Fatalf("overlay: %v", err)
+	if _, err := p.Click(testContext(t), ref); err != nil {
+		t.Fatalf("overlay must not veto activation: %v", err)
 	}
-	if evalValue(t, p, `document.querySelector('#hit').dataset.count`) != "1" {
-		t.Fatal("overlay click dispatched input")
+	if evalValue(t, p, `document.querySelector('#hit').dataset.count`) != "2" {
+		t.Fatal("covered control was not activated exactly once")
 	}
 	if _, err := p.Eval(testContext(t), `document.querySelector('#overlay').remove(); const old=document.querySelector('#hit');old.replaceWith(old.cloneNode(true))`); err != nil {
 		t.Fatal(err)
@@ -983,6 +976,7 @@ func TestChromeClickReattachesAndRejectsUnsafeTargets(t *testing.T) {
 	if _, err := p.Click(testContext(t), ref); err != nil {
 		t.Fatalf("fresh action did not resolve new document ordinal: %v", err)
 	}
+	var e *cdp.Error
 	for _, invalid := range []cdp.ControlID{0, -1} {
 		if _, err := p.Click(testContext(t), invalid); !errors.As(err, &e) || e.Code != "invalid_input" {
 			t.Fatalf("invalid ordinal: %v", err)

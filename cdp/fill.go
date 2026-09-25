@@ -6,7 +6,8 @@ import (
 )
 
 // Fill replaces text in text-like inputs, textarea, and contenteditable elements
-// with trusted browser input. It does not submit the field or await app timers.
+// using the browser's editing command. It emits native input, but not beforeinput,
+// and does not submit the field or await application timers.
 func (p *Page) Fill(ctx context.Context, id ControlID, text string) (_ ActionResult, err error) {
 	if !utf8.ValidString(text) {
 		return ActionResult{}, failure("invalid_input", "fill text must be valid UTF-8")
@@ -32,73 +33,100 @@ func (p *Page) Fill(ctx context.Context, id ControlID, text string) (_ ActionRes
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if _, err := p.inputPoint(ctx, target); err != nil {
+	if err := p.checkTarget(ctx, target, true); err != nil {
+		return ActionResult{}, err
+	}
+	if err := p.client.call(ctx, p.state.session, "Page.bringToFront", nil, nil); err != nil {
 		return ActionResult{}, err
 	}
 	if err := observation.startInput(ctx); err != nil {
 		return ActionResult{}, err
 	}
-	var status string
-	if err := p.nodeCall(ctx, target.doc, target.object, prepareFill, nil, &status); err != nil {
+	if err := p.runTarget(ctx, target, prepareFill, nil, true); err != nil {
 		return ActionResult{}, err
 	}
-	if err := fillStatus(status); err != nil {
-		return ActionResult{}, err
-	}
+	// Allow queued focus/selection handlers to run before checking AX and the
+	// replacement selection again. Never restore site-directed focus changes.
 	if err := p.settleFrame(ctx, target.doc); err != nil {
 		return ActionResult{}, err
 	}
-	// Focus/selection handlers can replace, disable, cover, or redirect the field.
-	if _, err := p.inputPoint(ctx, target); err != nil {
+	if err := p.checkTarget(ctx, target, true); err != nil {
 		return ActionResult{}, err
 	}
-	if err := p.nodeCall(ctx, target.doc, target.object, "function(){"+fillHelpers+"return fillState(this)}", nil, &status); err != nil {
-		return ActionResult{}, err
-	}
-	if err := fillStatus(status); err != nil {
-		return ActionResult{}, err
-	}
-	if err := p.client.call(ctx, target.doc.session, "Input.insertText", map[string]string{"text": text}, nil); err != nil {
+	// Keep focus/selection validation and insertion in one JS turn. A separate
+	// Input.insertText call would target whatever gained focus in between.
+	if err := p.runTarget(ctx, target, replaceFill, []any{text}, true); err != nil {
 		return ActionResult{}, err
 	}
 	return p.completeInput(ctx, observation, target.doc)
 }
-func fillStatus(status string) error {
-	switch status {
-	case "readonly":
-		return failure("blocked", "control is readonly")
-	case "not_editable":
-		return failure("invalid_input", "control is not a supported editable element")
-	case "focus":
-		return failure("blocked", "control lost focus before input")
-	case "selection":
-		return failure("blocked", "field selection changed before text replacement")
-	}
-	return targetStatus(status)
-}
 
-const fillHelpers = inputHelpers + `
+const fillHelpers = targetHelpers + `
+ function editable(el){
+  return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement && ['text','search','email','tel','url','password','number'].includes(el.type) || el.isContentEditable;
+ }
+ function selectionFor(el){
+  const root=el.getRootNode();
+  return typeof root.getSelection==='function' ? root.getSelection() : getSelection();
+ }
+ function focused(el){
+  return document.hasFocus() && el.getRootNode().activeElement===el;
+ }
+ // ShadowRoot.getSelection() normalizes an element-content range to text
+ // endpoints. Accept equivalent DOM edges, not just equal selected text: a
+ // partial range containing duplicated text must never pass as replacement.
+ function atContentEdge(node,offset,el,end){
+  while(node!==el){
+   const length=node instanceof CharacterData ? node.length : node.childNodes.length;
+   if(offset!==(end ? length : 0)) return false;
+   const parent=node.parentNode;if(!parent) return false;
+   offset=Array.prototype.indexOf.call(parent.childNodes,node)+(end ? 1 : 0);
+   node=parent;
+  }
+  return offset===(end ? el.childNodes.length : 0);
+ }
  function fillState(el){
-  const s=state(el);if(s) return s;
-  if(el.readOnly || el.getAttribute('aria-readonly')==='true') return 'readonly';
-  if(!(el instanceof HTMLTextAreaElement) && !(el instanceof HTMLInputElement && ['text','search','email','tel','url','password','number'].includes(el.type)) && !el.isContentEditable) return 'not_editable';
-  if(el.getRootNode().activeElement!==el) return 'focus';
+  const status=connected(el);if(status) return status;
+  if(!editable(el)) return 'not_editable';
+  if(!focused(el)) return 'focus';
   if(el.isContentEditable){
-   const selection=getSelection();if(selection.rangeCount!==1) return 'selection';
-   const range=selection.getRangeAt(0);
-   if(range.startContainer!==el || range.startOffset!==0 || range.endContainer!==el || range.endOffset!==el.childNodes.length) return 'selection';
-  }else if(el.selectionStart!==null && (el.selectionStart!==0 || el.selectionEnd!==el.value.length)) return 'selection';
+   const selection=selectionFor(el);if(!selection || selection.rangeCount!==1) return 'selection';
+   let range=selection.getRangeAt(0);
+   const root=el.getRootNode(),documentSelection=getSelection();
+   if(root instanceof ShadowRoot && typeof documentSelection.getComposedRanges==='function'){
+    // Legacy shadow ranges can even collapse across empty text children.
+    // An explicitly permitted shadow root exposes the underlying DOM range,
+    // including in closed roots, without weakening full-replacement proof.
+    const ranges=documentSelection.getComposedRanges({shadowRoots:[root]});
+    if(ranges.length!==1) return 'selection';
+    range=ranges[0];
+   }
+   if(!atContentEdge(range.startContainer,range.startOffset,el,false) || !atContentEdge(range.endContainer,range.endOffset,el,true)) return 'selection';
+  }else if(el.selectionStart!==null){
+   if(el.selectionStart!==0 || el.selectionEnd!==el.value.length) return 'selection';
+  }else{
+   // Email and number have no selectionStart/End API. Chrome still exposes
+   // their selected text. Refuse an unprovable replacement, including native
+   // number display text that differs from its sanitized machine value.
+   const selection=selectionFor(el);
+   if(!selection || selection.toString()!==el.value) return 'selection';
+  }
   return '';
  }
 `
 const prepareFill = `function(){` + fillHelpers + `
- const s=state(this);if(s) return s;
- if(this.readOnly || this.getAttribute('aria-readonly')==='true') return 'readonly';
- if(this instanceof HTMLTextAreaElement || this instanceof HTMLInputElement && ['text','search','email','tel','url','password','number'].includes(this.type)){
-  this.focus();this.select();
- }else if(this.isContentEditable){
-  this.focus();const range=document.createRange();range.selectNodeContents(this);
-  const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
- }else return 'not_editable';
+ const status=connected(this);if(status) return status;
+ if(!editable(this)) return 'not_editable';
+ this.focus();
+ const after=connected(this);if(after) return after;
+ if(!focused(this)) return 'focus';
+ if(this.isContentEditable){
+  const range=document.createRange();range.selectNodeContents(this);
+  const selection=selectionFor(this);selection.removeAllRanges();selection.addRange(range);
+ }else this.select();
  return fillState(this);
+}`
+const replaceFill = `function(text){` + fillHelpers + `
+ const status=fillState(this);if(status) return status;
+ return document.execCommand('insertText',false,text) ? '' : 'unsupported';
 }`
